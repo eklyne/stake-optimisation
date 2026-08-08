@@ -25,6 +25,7 @@ __all__ = [
     "risk_of_ruin",
     "bankroll_for_ruin",
     "drawdown_probability",
+    "loss_below_start_quantile",
 ]
 
 
@@ -84,6 +85,41 @@ def bankroll_for_ruin(winrate: float, stdev: float, ruin: float) -> float:
     if not 0.0 < ruin < 1.0:
         raise ValueError(f"ruin tolerance must be in (0, 1), got {ruin}")
     return -(stdev**2) * math.log(ruin) / (2.0 * winrate)
+
+
+def loss_below_start_quantile(winrate: float, stdev: float, quantile: float) -> float:
+    """How far BELOW THE STARTING BANKROLL you ever go, at a given probability.
+
+    Read the name carefully - this is not "the worst downswing you will have",
+    and the difference is large. Start on 10k, run up to 15k, fall back to 5k:
+    that is a 5k loss below start and a 10k peak-to-trough drawdown. Only the
+    first can bust you, so only the first is what ruin measures.
+
+    For a bankroll following Brownian motion with positive drift, the all-time
+    deepest excursion below the starting point is exponentially distributed:
+
+        P(ever fall x below start) = exp(-2 * mu * x / sigma**2)
+
+    which is precisely `risk_of_ruin` with x standing in for the bankroll.
+    Inverting it gives the depth to expect at any probability, and the two ideas
+    turn out to be one idea: **your risk tolerance IS a loss-below-start
+    quantile.** A 1% risk of ruin means your bankroll equals the 99th-percentile
+    lifetime loss below where you started.
+
+    This one really is bounded over infinite time, because the drift keeps
+    dragging the floor upward - the quantiles below are the forever figures, and
+    a finite horizon gives slightly smaller ones. PEAK-TO-TROUGH drawdown has no
+    such bound: given unlimited time it grows without limit, so quoting a
+    lifetime figure for it is meaningless and it has to come from a simulation
+    over a stated horizon instead.
+
+    `quantile` is the probability of NOT exceeding the returned depth, so 0.5 is
+    the median and 0.99 the one-in-a-hundred. Units follow the inputs: pass bb
+    and get bb, pass euros per 100 hands and get euros.
+    """
+    if not 0.0 < quantile < 1.0:
+        raise ValueError(f"quantile must be in (0, 1), got {quantile}")
+    return bankroll_for_ruin(winrate, stdev, 1.0 - quantile)
 
 
 def drawdown_probability(

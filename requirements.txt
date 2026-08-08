@@ -1,4 +1,5 @@
-# Only the charts and the test runner need anything installed - the maths and the
-# text commands are pure standard library on Python 3.11+.
+# Only the charts, the deck and the test runner need anything installed - the
+# maths and every text command are pure standard library on Python 3.11+.
 matplotlib
+python-pptx
 pytest

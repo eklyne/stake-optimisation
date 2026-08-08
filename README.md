@@ -38,8 +38,9 @@ Edit `config.toml`, then run it. There is no build step and nothing to rebuild �
 the config is read fresh on every run.
 
 ```
-run.bat                     THE ANSWER: both tables printed, both as CSV, plus the chart
-run.bat mix                 the same, minus the chart
+run.bat                     THE ANSWER: tables printed, CSVs, chart and deck
+run.bat mix                 the same, minus the chart and deck
+run.bat mix --charts        add the chart only
 run.bat mix --bankroll 12000    sweep an input without editing the file
 run.bat --output results        put the files somewhere else
 
@@ -54,10 +55,61 @@ Everything lands in `output\`:
 | `stake_screen.csv` | one row per stake, including the ruled-out ones and why |
 | `frontier.csv` | one row per undominated mix, with a table-count column per stake |
 | `frontier.png` | the chart |
+| `shot_take_optimisation.pptx` | the six-slide deck |
 
 **Bare `run.bat` is the whole job**, so nothing in `output\` can be stale against
-the config. The CSVs are written on every `mix` run (they're free); only the chart
-needs `--charts`, which the bare invocation passes for you.
+the config. The CSVs are written on every `mix` run (they're free); the chart and
+deck need `--charts` / `--deck`, which the bare invocation passes for you.
+
+### The deck
+
+1. **Stake table** — every metric per stake, rake and rakeback broken out, exclusions marked
+2. **Waterfall, bb/100** — before rake → rake → rakeback → banked, shared y axis
+3. **Waterfall, euros** — the same decomposition in money, where it reads the opposite way
+4. **Frontier** — every mix, the undominated edge, the chosen point
+5. **Configurations** — the optimum with two safer and two bolder frontier neighbours
+6. **Step up** — the cheapest way into each higher stake, and what it costs
+7. **Simulation** — a million hands, twenty thousand times: drawdowns and outcomes
+8. **Methodology** — what was assumed, and what that does to the numbers
+
+### Two kinds of downswing
+
+Easy to conflate, and only one has a closed form.
+
+**Loss below your starting bankroll** is what ruin measures. Start on €10k, run to
+€15k, fall to €5k: that's a €5k loss below start. Over unlimited time it's bounded
+and exactly exponential, so its quantiles are free — and its 99th percentile *is*
+your bankroll at a 1% tolerance. Your risk tolerance is a downswing quantile.
+
+**Peak-to-trough drawdown** is what a downswing feels like — the same episode is a
+€10k fall. It has **no all-time value**: given unlimited time it grows without
+bound, because a winning bankroll keeps making new highs to fall from. Every
+peak-to-trough figure is therefore "within N hands" and nothing else.
+
+That asymmetry is the whole reason `sim.py` exists. The frontier table's `typical`
+and `1-in-10` columns are the first kind; the deck's simulation slide is the
+second.
+
+### The simulation
+
+`sim_hands` × `sim_paths` in `config.toml` (default 1,000,000 hands × 20,000
+lifetimes, ~8 seconds). Static mix, fixed stakes, no move-down rule, ruin
+absorbing — so it's an upper bound on risk, not a forecast.
+
+Its test oracle is the closed form: over a long horizon the loss-below-start
+distribution must reproduce `ruin.loss_below_start_quantile`. A simulation that
+disagrees where the maths is known has a bug, and `tests/test_sim.py` asserts both
+that convergence *and* that peak-to-trough keeps growing while loss-below-start
+doesn't.
+
+Every figure is recomputed at build time from the same functions the terminal
+uses, so a slide cannot disagree with the CLI. Nothing is hardcoded.
+
+`shotopt/pptx_common.py` is **copied** from the nemesis-mvp analytics repo rather
+than imported, so this repo depends on nothing over there — with the usual cost
+of a copy, that fixes don't flow between them. The branded template lives at
+`assets/deck_template.pptx` and is gitignored; without it the deck still builds,
+just with plain styling.
 
 The CSVs keep full precision on the risk columns — rounding ruin to the two
 decimals the terminal shows would collapse every safe mix to `0.00%` and make the
@@ -233,7 +285,10 @@ shotopt/
   analysis.py        the only module that knows about both config and maths
   charts.py          the frontier chart
   export.py          CSV copies of the two printed tables
+  sim.py             Monte Carlo over a fixed hand horizon
+  deck.py            the eight-slide PPTX
+  pptx_common.py     deck infrastructure, copied from nemesis-mvp (a fork, not a mirror)
   cli.py             the command line
-tests/               98 tests, no dependencies (pytest or stdlib unittest)
+tests/               129 tests, no dependencies (pytest or stdlib unittest)
 docs/theory.md       derivations and where they come from
 ```

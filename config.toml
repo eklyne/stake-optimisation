@@ -1,14 +1,19 @@
 # shot-take-optimisation
 #
-# EVERY NUMBER BELOW IS A PLACEHOLDER. Replace them with your own before reading
-# anything into the output - the tool is only as good as the win rates you feed
-# it, and a made-up standard deviation produces a confident, wrong answer.
+# Win rates and hand counts are REAL, from stake_data.csv (402,992 hands).
+# The standard deviations are NOT measured - they are a flat 92 bb/100 assumption
+# across every stake, so treat the risk numbers as indicative.
 
 # --- the four inputs ------------------------------------------------------- #
 
-bankroll_eur = 30000            # 1. bankroll, in euros
+bankroll_eur = 5000            # 1. bankroll, in euros
 tables = 12                    # 2. tables played simultaneously
 ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
+
+# Share of rake rebated, applied to each stake's `rake_bb100` below. Rakeback is
+# a rebate on volume, not a gamble: it lifts the mean and adds NO variance, so it
+# is pure improvement to the risk picture, not a trade-off.
+rakeback_pct = 0.30
 
 # 3. win rate and standard deviation per stake: the [[stake]] blocks below.
 
@@ -23,11 +28,25 @@ ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
 # down. Only used by the `report` and `stake` commands; the mix ignores it.
 kelly_fraction = 0.5
 
-hands_per_hour_per_table = 75  # iPoker 5/6-max, roughly
+# From the data itself: 402,992 hands over 481.02 hours = 838 hands/hour in
+# total, which at 12 tables is ~70 each. Only scales every EUR/hour uniformly, so
+# it cannot change the ranking or the chosen mix.
+hands_per_hour_per_table = 70
 
 # Both of the following are ASSUMPTIONS, not measurements. They default to zero,
 # meaning the textbook independent case. Any non-zero value here is a number you
 # chose to believe.
+# THE TIMESCALE. Every simulated downswing figure in the deck covers this many
+# hands - 1M is roughly a year of your volume (~1,190 hours at 12 tables).
+#
+# It is not a cosmetic setting. Peak-to-trough drawdown has no all-time value:
+# given unlimited time it grows without bound, because a winning bankroll keeps
+# making new highs to fall from. So every downswing number is "within this many
+# hands" and means nothing without it. Change this and every downswing in the
+# deck changes with it.
+timescale_hands = 1000000
+sim_paths = 20000
+
 winrate_haircut_bb_per_table = 0.0  # bb/100 lost per table beyond the first
 table_correlation = 0.0             # 0 = tables independent; raises effective
                                     # variance, and therefore the roll required
@@ -43,46 +62,69 @@ table_correlation = 0.0             # 0 = tables independent; raises effective
 # tables on a stake that rarely has four good games running. `max_tables = 0`
 # excludes a stake entirely.
 
+# All win rates and hand counts below are from stake_data.csv. The 92.0 std dev
+# is the same assumed figure everywhere - it is NOT measured.
+
 [[stake]]
 name = "50NL"
 bb_eur = 0.50
-winrate_bb100 = 7.0
-stdev_bb100 = 95.0
-hands = 150000
+winrate_bb100 = 8.18
+stdev_bb100 = 92.0
+rake_bb100 = 10.195
+current_hands = 23082
+hands = 271592
 
 [[stake]]
 name = "100NL"
 bb_eur = 1.00
-winrate_bb100 = 5.5
+winrate_bb100 = 7.46
 stdev_bb100 = 92.0
-hands = 120000
+rake_bb100 = 8.329
+current_hands = 11052
+hands = 79329
 
+# The two EUR2 NL rows (5-max 30,187 hands at 3.24; 6-max 8,783 at 8.04) are
+# pooled here: same blinds, same rake, same money, so the allocator has no reason
+# to treat them as separate rungs. Hand-weighted, that is 4.32 over 38,970.
 [[stake]]
 name = "200NL"
 bb_eur = 2.00
-winrate_bb100 = 3.5
-stdev_bb100 = 90.0
-hands = 90000
+winrate_bb100 = 4.32
+stdev_bb100 = 92.0
+rake_bb100 = 6.545
+current_hands = 13760
+hands = 38970
 
 [[stake]]
 name = "400NL"
 bb_eur = 4.00
-winrate_bb100 = 2.0
-stdev_bb100 = 88.0
-hands = 25000
+winrate_bb100 = 4.41
+stdev_bb100 = 92.0
+rake_bb100 = 4.411
+current_hands = 4632
+hands = 11931
 
+# The next two win rates are ASSUMED, not measured. The measured figures (67.73
+# and 68.01 bb/100, off 1,043 and 127 hands) are noise - taken at face value they
+# had the optimiser recommending twelve 1KNL tables for "EUR 5,713/hour at zero
+# risk". These are deliberate, conservative placeholders continuing the downward
+# trend of the ladder, so the stakes can compete on a plausible basis instead of
+# on a small sample. They are guesses, and everything downstream of them is too.
+#
+# `hands` is deliberately omitted: there is no sample supporting these numbers,
+# and quoting a confidence interval around a guess would dress it up as evidence.
 [[stake]]
 name = "600NL"
 bb_eur = 6.00
-winrate_bb100 = 1.0
-stdev_bb100 = 88.0
-hands = 6000
+winrate_bb100 = 3.0
+stdev_bb100 = 92.0
+rake_bb100 = 3.857
+current_hands = 600
 
 [[stake]]
 name = "1KNL"
 bb_eur = 10.00
-winrate_bb100 = 0.5
-stdev_bb100 = 88.0
-# No `hands` - never played it. The tool will treat the win rate above as known,
-# which it very much is not: it is a guess, and the whole stake stands or falls
-# on it.
+winrate_bb100 = 2.0
+stdev_bb100 = 92.0
+rake_bb100 = 3.661
+current_hands = 10

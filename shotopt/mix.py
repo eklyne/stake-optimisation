@@ -32,12 +32,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from . import rates
+from . import rates, ruin
 from .config import Config, Stake
 
 __all__ = [
     "Allocation",
     "StakeScreen",
+    "StepUp",
+    "step_up_options",
+    "current_allocation",
     "MAX_ALLOCATIONS",
     "AllocationLimit",
     "screen_stakes",
@@ -87,6 +90,19 @@ class Allocation:
     def stdev_eur_per_100(self) -> float:
         return math.sqrt(self.variance_eur_per_100)
 
+    def loss_below_start(self, quantile: float) -> float | None:
+        """Deepest fall below the starting bankroll, in euros, at `quantile`.
+
+        Exact and bounded over all time - unlike peak-to-trough drawdown, which
+        needs the simulation. None when the mix loses money, since a losing mix
+        falls arbitrarily far given long enough.
+        """
+        if self.mean_eur_per_100 <= 0:
+            return None
+        return ruin.loss_below_start_quantile(
+            self.mean_eur_per_100, self.stdev_eur_per_100, quantile
+        )
+
 
 @dataclass(frozen=True)
 class StakeScreen:
@@ -100,10 +116,12 @@ class StakeScreen:
     eur_per_hour: float
     dominated_by: Stake | None
     """Set when another stake earns at least as much at no more variance."""
+    excluded_reason: str | None = None
+    """Why this stake is out of the allocation, or None if it is in it."""
 
     @property
     def kept(self) -> bool:
-        return self.dominated_by is None
+        return self.excluded_reason is None
 
 
 def screen_stakes(config: Config) -> list[StakeScreen]:
@@ -131,8 +149,12 @@ def screen_stakes(config: Config) -> list[StakeScreen]:
 
     means, stdevs, hourlies = [], [], []
     for stake in stakes:
-        winrate = rates.effective_winrate(
-            stake.winrate_bb100, tables, config.winrate_haircut_bb_per_table
+        winrate = rates.total_winrate(
+            stake.winrate_bb100,
+            tables,
+            config.winrate_haircut_bb_per_table,
+            stake.rake_bb100,
+            config.rakeback_pct,
         )
         mean = winrate * stake.bb_eur
         means.append(mean)
@@ -147,7 +169,7 @@ def screen_stakes(config: Config) -> list[StakeScreen]:
         for other, candidate in enumerate(stakes):
             if other == index:
                 continue
-            # The dominator must be able to take every table on its own.
+            # A stake you cannot sit at cannot dominate anything.
             if candidate.max_tables is not None and candidate.max_tables < tables:
                 continue
             at_least_as_good = means[other] >= means[index] and stdevs[other] <= stdevs[index]
@@ -155,6 +177,17 @@ def screen_stakes(config: Config) -> list[StakeScreen]:
             if at_least_as_good and strictly_better:
                 dominated_by = candidate
                 break
+
+        # An explicit `max_tables = 0` is checked first, so a stake the user has
+        # deliberately taken out of the running is reported as their choice
+        # rather than as an economic verdict the tool reached.
+        if stake.max_tables == 0:
+            excluded_reason = "held out (max_tables = 0)"
+        elif dominated_by is not None:
+            excluded_reason = f"{dominated_by.name} earns more at lower variance"
+        else:
+            excluded_reason = None
+
         screens.append(
             StakeScreen(
                 stake=stake,
@@ -162,6 +195,7 @@ def screen_stakes(config: Config) -> list[StakeScreen]:
                 stdev_eur_per_100=stdevs[index],
                 eur_per_hour=hourlies[index],
                 dominated_by=dominated_by,
+                excluded_reason=excluded_reason,
             )
         )
     return screens
@@ -230,10 +264,16 @@ def evaluate(counts: tuple[int, ...], config: Config) -> Allocation:
         share = count / tables
         # The haircut is charged on TOTAL tables in play, not on this stake's
         # share - attention is spread across the whole screen, not per stake.
-        winrate = rates.effective_winrate(
-            stake.winrate_bb100, tables, config.winrate_haircut_bb_per_table
+        winrate = rates.total_winrate(
+            stake.winrate_bb100,
+            tables,
+            config.winrate_haircut_bb_per_table,
+            stake.rake_bb100,
+            config.rakeback_pct,
         )
         mean += share * winrate * stake.bb_eur
+        # Rakeback deliberately absent here: it is a rebate on volume, not a
+        # gamble, so it moves the mean and not the variance.
         variance += share * (stake.stdev_bb100 * stake.bb_eur) ** 2
 
     # Same equicorrelation inflation as the single-stake path, applied to the
@@ -314,6 +354,116 @@ def frontier(allocations: list[Allocation]) -> list[Allocation]:
             kept.append(allocation)
             best_so_far = allocation.eur_per_hour
     return kept
+
+
+@dataclass(frozen=True)
+class StepUp:
+    """One concrete way of shifting the optimal mix upward."""
+
+    label: str
+    """What the move is, in words."""
+    allocation: Allocation
+    eur_per_hour_delta: float
+    ruin_multiple: float
+    """Risk of ruin relative to the chosen mix's."""
+    within_tolerance: bool
+
+
+def step_up_options(config: Config, best: Allocation | None = None) -> list[StepUp]:
+    """Two specific moves up from the optimal mix, and what each costs.
+
+    Not "the cheapest allocation containing stake X" - that answers a question
+    nobody asks, and tended to return a mix bearing no resemblance to the one
+    you are actually playing. These are the two moves a player really makes:
+
+    1. **Top up** - one table of the HIGHEST stake in the mix moves up a rung,
+       reaching for a stake not currently played. The classic shot.
+    2. **Bottom up** - one table of the LOWEST stake in the mix moves up a rung,
+       thickening the middle instead of extending the top.
+
+    One table and one rung in both cases: these are single steps, not
+    wholesale reallocations, so the table count is unchanged and each is
+    reachable tomorrow from what is being played today. Returns whichever of the
+    two exist and differ.
+    """
+    allocations = all_allocations(config)
+    if best is None:
+        best = best_allocation(allocations)
+    if best is None:
+        return []
+
+    stakes = config.stakes
+    used = [index for index, count in enumerate(best.counts) if count]
+    if not used:
+        return []
+    highest, lowest = max(used), min(used)
+
+    def caps_for(index: int) -> int:
+        cap = stakes[index].max_tables
+        return config.tables if cap is None else min(cap, config.tables)
+
+    options: list[StepUp] = []
+
+    def add(label: str, counts: list[int]) -> None:
+        allocation = evaluate(tuple(counts), config)
+        options.append(
+            StepUp(
+                label=label,
+                allocation=allocation,
+                eur_per_hour_delta=allocation.eur_per_hour - best.eur_per_hour,
+                ruin_multiple=allocation.risk_of_ruin / max(best.risk_of_ruin, 1e-12),
+                within_tolerance=allocation.within_tolerance,
+            )
+        )
+
+    def move_one(source: int, prefix: str) -> tuple[int, ...] | None:
+        target = source + 1
+        if target >= len(stakes):
+            return None
+        if caps_for(target) < best.counts[target] + 1:
+            return None
+        counts = list(best.counts)
+        counts[source] -= 1
+        counts[target] += 1
+        add(
+            f"{prefix}: 1x {stakes[source].name} -> 1x {stakes[target].name}",
+            counts,
+        )
+        return tuple(counts)
+
+    top = move_one(highest, "Top up")
+    if lowest != highest:
+        bottom = move_one(lowest, "Bottom up")
+        # Identical moves when the mix spans exactly two adjacent rungs and the
+        # top one has nowhere to go - no point listing the same thing twice.
+        if bottom is not None and bottom == top:
+            options.pop()
+
+    return options
+
+
+def current_allocation(config: Config) -> Allocation | None:
+    """The mix actually being played, rebuilt from `current_hands` per stake.
+
+    Hands are apportioned to whole tables by LARGEST REMAINDER: floor every
+    share, then hand the leftover seats to the biggest fractions. Naive rounding
+    would not sum to the table count - a stake played 1.4 tables' worth and one
+    played 0.6 both round to 1, and twelve tables become thirteen.
+
+    Returns None when no stake declares `current_hands`.
+    """
+    hands = [stake.current_hands or 0.0 for stake in config.stakes]
+    total = sum(hands)
+    if total <= 0:
+        return None
+
+    exact = [h / total * config.tables for h in hands]
+    counts = [int(value) for value in exact]
+    remaining = config.tables - sum(counts)
+    order = sorted(range(len(exact)), key=lambda i: exact[i] - counts[i], reverse=True)
+    for index in order[:remaining]:
+        counts[index] += 1
+    return evaluate(tuple(counts), config)
 
 
 def marginal_step_up(

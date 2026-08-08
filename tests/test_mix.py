@@ -121,6 +121,78 @@ class TestEvaluation(unittest.TestCase):
             mix.evaluate((0, 0, 0), _config())
 
 
+class TestRakeback(unittest.TestCase):
+    """Rakeback is money without variance - the tests pin exactly that."""
+
+    def _with(self, pct: float) -> Config:
+        return _config(
+            rakeback_pct=pct,
+            stakes=(
+                Stake("100NL", 1.0, 5.5, 92.0, rake_bb100=8.0),
+                Stake("200NL", 2.0, 3.5, 90.0, rake_bb100=6.5),
+            ),
+        )
+
+    def test_it_raises_the_mean(self):
+        without = mix.evaluate((3, 3), self._with(0.0))
+        with_rb = mix.evaluate((3, 3), self._with(0.3))
+        self.assertGreater(with_rb.mean_eur_per_100, without.mean_eur_per_100)
+
+    def test_it_does_NOT_raise_the_variance(self):
+        # The load-bearing property. Rakeback is a rebate on volume, not a
+        # gamble; if it ever moved the variance, every risk number downstream
+        # would be quietly wrong in the safe-looking direction.
+        without = mix.evaluate((3, 3), self._with(0.0))
+        with_rb = mix.evaluate((3, 3), self._with(0.3))
+        self.assertAlmostEqual(with_rb.variance_eur_per_100, without.variance_eur_per_100)
+
+    def test_it_therefore_lowers_risk_of_ruin(self):
+        without = mix.evaluate((3, 3), self._with(0.0))
+        with_rb = mix.evaluate((3, 3), self._with(0.3))
+        self.assertLess(with_rb.risk_of_ruin, without.risk_of_ruin)
+
+    def test_the_amount_is_the_stated_share_of_rake(self):
+        screens = {s.stake.name: s for s in mix.screen_stakes(self._with(0.25))}
+        # 100NL: 5.5 + 0.25*8.0 = 7.5 bb/100, at EUR1/bb.
+        self.assertAlmostEqual(screens["100NL"].mean_eur_per_100, 7.5)
+
+    def test_zero_rakeback_is_inert(self):
+        plain = _config(
+            stakes=(Stake("100NL", 1.0, 5.5, 92.0), Stake("200NL", 2.0, 3.5, 90.0))
+        )
+        self.assertAlmostEqual(
+            mix.evaluate((3, 3), self._with(0.0)).mean_eur_per_100,
+            mix.evaluate((3, 3), plain).mean_eur_per_100,
+        )
+
+    def test_a_stake_with_no_rake_figure_simply_earns_none(self):
+        config = _config(
+            rakeback_pct=0.3,
+            stakes=(
+                Stake("100NL", 1.0, 5.5, 92.0, rake_bb100=8.0),
+                Stake("200NL", 2.0, 3.5, 90.0),  # no rake_bb100 supplied
+            ),
+        )
+        screens = {s.stake.name: s for s in mix.screen_stakes(config)}
+        self.assertAlmostEqual(screens["200NL"].mean_eur_per_100, 7.0)  # 3.5 * 2, unchanged
+        self.assertAlmostEqual(screens["100NL"].mean_eur_per_100, 7.9)  # 5.5 + 2.4
+
+    def test_it_can_change_which_stakes_are_redundant(self):
+        # Rake falls in bb terms as stakes rise, so rakeback is worth most at the
+        # bottom - enough here to lift the lower stake past the higher one.
+        stakes = (
+            Stake("100NL", 1.0, 4.0, 92.0, rake_bb100=10.0),
+            Stake("200NL", 2.0, 2.2, 92.0, rake_bb100=3.0),
+        )
+        without = {s.stake.name: s.kept for s in mix.screen_stakes(_config(stakes=stakes))}
+        with_rb = {
+            s.stake.name: s.kept
+            for s in mix.screen_stakes(_config(stakes=stakes, rakeback_pct=0.5))
+        }
+        self.assertTrue(without["200NL"])  # 4.40 EUR/100 beats 100NL's 4.00
+        self.assertFalse(with_rb["200NL"])  # 5.90 vs 100NL's 9.00 - now dominated
+
+
 class TestOptimisation(unittest.TestCase):
     def test_best_is_inside_tolerance_and_beats_every_other_inside_it(self):
         allocations = mix.all_allocations(_config())
@@ -268,6 +340,32 @@ class TestStakeScreen(unittest.TestCase):
 
     def test_nothing_is_ruled_out_in_a_well_behaved_ladder(self):
         self.assertTrue(all(s.kept for s in mix.screen_stakes(_config())))
+
+    def test_a_held_out_stake_says_so_rather_than_claiming_an_economic_verdict(self):
+        # max_tables = 0 is the user's choice, not something the tool worked out.
+        # Reporting it as "redundant" would put words in their mouth - and here
+        # the stake is not redundant at all, it is the best earner on paper.
+        config = _config(
+            stakes=(
+                Stake("200NL", 2.0, 3.5, 90.0),
+                Stake("1KNL", 10.0, 60.0, 92.0, hands=127, max_tables=0),
+            )
+        )
+        screens = mix.screen_stakes(config)
+        self.assertTrue(screens[0].kept)
+        self.assertFalse(screens[1].kept)
+        self.assertIn("max_tables", screens[1].excluded_reason)
+        self.assertIsNone(screens[1].dominated_by)
+
+    def test_a_held_out_stake_gets_no_tables(self):
+        config = _config(
+            stakes=(
+                Stake("200NL", 2.0, 3.5, 90.0),
+                Stake("1KNL", 10.0, 60.0, 92.0, hands=127, max_tables=0),
+            )
+        )
+        for allocation in mix.all_allocations(config):
+            self.assertEqual(allocation.counts[1], 0)
 
     def test_pruning_cannot_change_the_frontier(self):
         """The property that licenses pruning as more than a display filter.

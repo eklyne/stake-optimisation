@@ -21,7 +21,9 @@ __all__ = ["Stake", "Config", "ConfigError", "load_config", "DEFAULT_CONFIG_PATH
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
 _STAKE_REQUIRED = ("name", "bb_eur", "winrate_bb100", "stdev_bb100")
-_STAKE_KNOWN = _STAKE_REQUIRED + ("hands", "max_tables")
+_STAKE_KNOWN = _STAKE_REQUIRED + (
+    "hands", "max_tables", "rake_bb100", "current_hands"
+)
 _TOP_LEVEL_KNOWN = frozenset(
     {
         "bankroll_eur",
@@ -31,6 +33,9 @@ _TOP_LEVEL_KNOWN = frozenset(
         "hands_per_hour_per_table",
         "winrate_haircut_bb_per_table",
         "table_correlation",
+        "rakeback_pct",
+        "timescale_hands",
+        "sim_paths",
         "stake",
     }
 )
@@ -55,6 +60,17 @@ class Stake:
     A real constraint on the mix, and the one most likely to bind: the optimiser
     will happily allocate eight tables to a stake that never has eight good games
     running."""
+    rake_bb100: float | None = None
+    """Rake paid per 100 hands, in bb - the base the rakeback percentage applies
+    to. Falls sharply as stakes rise, since a currency-capped rake bites less on
+    bigger bb-denominated pots, which is why rakeback is worth most at the bottom
+    of the ladder."""
+    current_hands: float | None = None
+    """Hands actually played at this stake in the period being reviewed.
+
+    Only ever used as a RATIO, to reconstruct how the table time was really
+    split, so the absolute figures and the period they cover don't matter as
+    long as they are consistent across stakes."""
 
     @property
     def buyin_eur(self) -> float:
@@ -78,6 +94,18 @@ class Config:
     hands_per_hour_per_table: float = 75.0
     winrate_haircut_bb_per_table: float = 0.0
     table_correlation: float = 0.0
+    rakeback_pct: float = 0.0
+    """Share of rake rebated. Applies to every stake's `rake_bb100`."""
+    timescale_hands: int = 1_000_000
+    """The period every simulated figure covers, in hands.
+
+    ONE horizon for the whole tool, because peak-to-trough drawdown has no
+    all-time value - given unlimited time it grows without bound - so every
+    downswing number must name the stretch of play it refers to, and two
+    different stretches on two different slides would be unreadable. Set it to
+    a period you can picture: a year of your own volume."""
+    sim_paths: int = 20_000
+    """Independent lifetimes simulated."""
 
     def __post_init__(self) -> None:
         # Runs on CLI overrides too, so `--bankroll -500` is caught here rather
@@ -92,6 +120,11 @@ class Config:
             )
         if not 0.0 < self.kelly_fraction <= 1.0:
             raise ConfigError(f"kelly_fraction must be in (0, 1], got {self.kelly_fraction}")
+        if not 0.0 <= self.rakeback_pct <= 1.0:
+            raise ConfigError(
+                f"rakeback_pct must be a share between 0 and 1 (0.3 for 30%), "
+                f"got {self.rakeback_pct}"
+            )
         if not self.stakes:
             raise ConfigError("no stakes configured - nothing to report on")
 
@@ -143,6 +176,22 @@ def _parse_stake(raw: dict, index: int) -> Stake:
                 f"{where}: max_tables must be a non-negative integer, got {max_tables!r}"
             )
 
+    rake = raw.get("rake_bb100")
+    if rake is not None:
+        if isinstance(rake, bool) or not isinstance(rake, (int, float)) or rake < 0:
+            raise ConfigError(
+                f"{where}: rake_bb100 must be a non-negative number, got {rake!r}"
+            )
+        rake = float(rake)
+
+    current = raw.get("current_hands")
+    if current is not None:
+        if isinstance(current, bool) or not isinstance(current, (int, float)) or current < 0:
+            raise ConfigError(
+                f"{where}: current_hands must be a non-negative number, got {current!r}"
+            )
+        current = float(current)
+
     return Stake(
         name=name,
         bb_eur=bb_eur,
@@ -150,6 +199,8 @@ def _parse_stake(raw: dict, index: int) -> Stake:
         stdev_bb100=stdev,
         hands=hands,
         max_tables=max_tables,
+        rake_bb100=rake,
+        current_hands=current,
     )
 
 
@@ -181,6 +232,15 @@ def load_config(path: str | Path | None = None) -> Config:
     hands_per_hour_per_table = float(raw.get("hands_per_hour_per_table", 75.0))
     haircut = float(raw.get("winrate_haircut_bb_per_table", 0.0))
     correlation = float(raw.get("table_correlation", 0.0))
+    rakeback_pct = float(raw.get("rakeback_pct", 0.0))
+    timescale_hands = int(raw.get("timescale_hands", 1_000_000))
+    sim_paths = int(raw.get("sim_paths", 20_000))
+    if timescale_hands < 100:
+        raise ConfigError(
+            f"{where}: timescale_hands must be at least 100, got {timescale_hands}"
+        )
+    if sim_paths < 1:
+        raise ConfigError(f"{where}: sim_paths must be at least 1, got {sim_paths}")
 
     if bankroll_eur <= 0:
         raise ConfigError(f"{where}: bankroll_eur must be positive, got {bankroll_eur}")
@@ -224,4 +284,7 @@ def load_config(path: str | Path | None = None) -> Config:
         hands_per_hour_per_table=hands_per_hour_per_table,
         winrate_haircut_bb_per_table=haircut,
         table_correlation=correlation,
+        rakeback_pct=rakeback_pct,
+        timescale_hands=timescale_hands,
+        sim_paths=sim_paths,
     )

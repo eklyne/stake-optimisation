@@ -58,8 +58,12 @@ class StakeReport:
 
 
 def _report_for(stake: Stake, config: Config) -> StakeReport:
-    winrate_eff = rates.effective_winrate(
-        stake.winrate_bb100, config.tables, config.winrate_haircut_bb_per_table
+    winrate_eff = rates.total_winrate(
+        stake.winrate_bb100,
+        config.tables,
+        config.winrate_haircut_bb_per_table,
+        stake.rake_bb100,
+        config.rakeback_pct,
     )
     stdev_eff = ruin.effective_stdev(
         stake.stdev_bb100, config.tables, config.table_correlation

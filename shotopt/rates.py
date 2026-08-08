@@ -13,6 +13,8 @@ from __future__ import annotations
 
 __all__ = [
     "effective_winrate",
+    "rakeback_bb100",
+    "total_winrate",
     "hands_per_hour",
     "eur_per_hour",
 ]
@@ -36,6 +38,43 @@ def effective_winrate(
     if haircut_bb_per_table < 0:
         raise ValueError(f"haircut must be non-negative, got {haircut_bb_per_table}")
     return winrate - haircut_bb_per_table * (tables - 1)
+
+
+def rakeback_bb100(rake_bb100: float | None, rakeback_pct: float) -> float:
+    """Rakeback earned per 100 hands, in bb.
+
+    A rebate on rake already paid, so it is additional to a win rate that is
+    already net of rake - which is what a tracker reports. No double counting.
+
+    The important property is that it carries NO VARIANCE. It is a rebate on
+    volume, not a gamble, so it lifts the mean and leaves the standard deviation
+    exactly where it was - improving the mean/variance ratio the ruin calculation
+    runs on, and doing so hardest at the stakes where rake is largest in bb terms.
+    """
+    if rake_bb100 is None:
+        return 0.0
+    if rake_bb100 < 0:
+        raise ValueError(f"rake must be non-negative, got {rake_bb100}")
+    if not 0.0 <= rakeback_pct <= 1.0:
+        raise ValueError(f"rakeback_pct must be in [0, 1], got {rakeback_pct}")
+    return rake_bb100 * rakeback_pct
+
+
+def total_winrate(
+    winrate_bb100: float,
+    tables: int,
+    haircut_bb_per_table: float = 0.0,
+    rake_bb100: float | None = None,
+    rakeback_pct: float = 0.0,
+) -> float:
+    """Win rate actually banked, bb/100: table haircut off, rakeback on.
+
+    The one place the two adjustments are combined, so no caller can apply one
+    and forget the other.
+    """
+    return effective_winrate(winrate_bb100, tables, haircut_bb_per_table) + rakeback_bb100(
+        rake_bb100, rakeback_pct
+    )
 
 
 def hands_per_hour(tables: int, hands_per_hour_per_table: float) -> float:

@@ -14,11 +14,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import estimation, export, mix
+from . import estimation, export, mix, rates
 from .analysis import StakeReport, best_affordable, build_reports
 from .config import Config, ConfigError, load_config
 
 __all__ = ["main"]
+
+_WRITTEN: list[Path] = []
+"""Everything this run produced, reported in one block at the end."""
 
 
 def _eur(value: float) -> str:
@@ -46,6 +49,8 @@ def _print_header(config: Config, kelly_fraction: bool = True) -> None:
         line += f"   Kelly k={config.kelly_fraction:g}"
     print(line)
     notes = []
+    if config.rakeback_pct:
+        notes.append(f"rakeback {config.rakeback_pct:.0%}")
     if config.winrate_haircut_bb_per_table:
         notes.append(
             f"win rate haircut {config.winrate_haircut_bb_per_table:g} bb/100 per extra table"
@@ -53,7 +58,7 @@ def _print_header(config: Config, kelly_fraction: bool = True) -> None:
     if config.table_correlation:
         notes.append(f"table correlation {config.table_correlation:g}")
     if notes:
-        print("Assumptions in play: " + "; ".join(notes))
+        print("In play: " + "; ".join(notes))
 
 
 def cmd_report(config: Config, reports: list[StakeReport]) -> None:
@@ -209,18 +214,27 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
     print()
     print(f"STEP 1 - STAKE SCREEN   (if all {config.tables} tables were at one stake)")
     print()
-    header = f"  {'stake':<9}  {'EUR/hr':>8}  {'EUR/100':>9}  {'sd EUR/100':>11}   verdict"
+    header = (
+        f"  {'stake':<9}  {'bb/100':>7}  {'+RB':>6}  {'=net':>7}  {'hands':>9}  "
+        f"{'+/- 95%':>8}  {'EUR/hr':>8}  {'EUR/100':>9}  {'sd EUR/100':>11}   verdict"
+    )
     print(header)
     print(_rule(len(header) + 26))
     for screen in screens:
-        if screen.kept:
-            verdict = "keep"
+        verdict = "keep" if screen.kept else f"EXCLUDED - {screen.excluded_reason}"
+        stake = screen.stake
+        # The interval sits beside the win rate on purpose: a bb/100 figure with
+        # no sample behind it is the single easiest way to misread this table.
+        if stake.hands:
+            margin = f"{estimation.winrate_ci(0.0, stake.stdev_bb100, stake.hands)[1]:>8.1f}"
+            hands = f"{stake.hands:>9,}"
         else:
-            verdict = (
-                f"REDUNDANT - {screen.dominated_by.name} earns more at lower variance"
-            )
+            margin, hands = f"{'?':>8}", f"{'-':>9}"
+        rakeback = rates.rakeback_bb100(stake.rake_bb100, config.rakeback_pct)
+        net = screen.mean_eur_per_100 / stake.bb_eur
         print(
-            f"  {screen.stake.name:<9}  {screen.eur_per_hour:>8,.0f}  "
+            f"  {stake.name:<9}  {stake.winrate_bb100:>7.2f}  {rakeback:>6.2f}  {net:>7.2f}  "
+            f"{hands}  {margin}  {screen.eur_per_hour:>8,.0f}  "
             f"{screen.mean_eur_per_100:>9,.2f}  {screen.stdev_eur_per_100:>11,.0f}   {verdict}"
         )
     kept = [s for s in screens if s.kept]
@@ -251,6 +265,10 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
             f"{allocation.drawdown_50:>8.1%}  {allocation.label}{marker}"
         )
     print()
+    print("  Downswing figures need a simulation and a timescale - they are in the deck,")
+    print(f"  over {config.timescale_hands:,} hands. Simulating every frontier row here")
+    print("  would turn an instant command into a slow one.")
+    print()
 
     if best is None:
         cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
@@ -258,11 +276,7 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
               f"at {cheapest.risk_of_ruin:.2%}.")
         print()
 
-    written = export.write_tables(screens, edge, config, best, output_dir)
-    print(f"Tables written to {output_dir.resolve()}:")
-    for path in written:
-        print(f"  {path.name}")
-    print()
+    _WRITTEN.extend(export.write_tables(screens, edge, config, best, output_dir))
     return 0
 
 
@@ -306,6 +320,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="also render the frontier PNG",
     )
+    common.add_argument(
+        "--deck",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="also build the PowerPoint deck",
+    )
 
     parser = argparse.ArgumentParser(
         prog="shotopt",
@@ -324,11 +344,11 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-DEFAULT_ARGV = ["mix", "--charts"]
-"""What a bare `run.bat` does: the full job, text, CSVs and chart.
+DEFAULT_ARGV = ["mix", "--charts", "--deck"]
+"""What a bare `run.bat` does: everything - text, CSVs, chart and deck.
 
-Running with no arguments should refresh everything, not silently skip the chart
-and leave a stale PNG on disk. Naming a subcommand opts out of rendering; the
+Running with no arguments should refresh every output, not silently skip some
+and leave them stale on disk. Naming a subcommand opts out of rendering; the
 CSVs are written either way, since they are free.
 """
 
@@ -336,6 +356,7 @@ DEFAULT_OUTPUT_DIR = Path("output")
 
 
 def main(argv: list[str] | None = None) -> int:
+    _WRITTEN.clear()  # module-level, so a second call in one process starts clean
     if argv is None:
         argv = sys.argv[1:]
     args = _build_parser().parse_args(argv or DEFAULT_ARGV)
@@ -365,13 +386,29 @@ def main(argv: list[str] | None = None) -> int:
     elif command == "stake":
         exit_code = cmd_stake(config, reports, args.name)
 
+    # Both imported lazily, so the text commands need neither matplotlib nor
+    # python-pptx installed.
     if get("charts"):
-        from . import charts  # imported lazily so the text commands need no matplotlib
+        from . import charts
 
-        written = charts.write_all(config, output_dir)
-        print(f"Chart written to {output_dir.resolve()}:")
-        for path in written:
+        _WRITTEN.extend(charts.write_all(config, output_dir))
+
+    plain_deck = False
+    if get("deck"):
+        from . import deck, pptx_common
+
+        _WRITTEN.append(deck.build(config, output_dir))
+        plain_deck = not pptx_common.template_available()
+
+    # Reported once, at the end, so the numbered steps read in order rather than
+    # being interleaved with file-written chatter.
+    if _WRITTEN:
+        print(f"\nFiles written to {output_dir.resolve()}:")
+        for path in _WRITTEN:
             print(f"  {path.name}")
+        if plain_deck:
+            print("  (deck built without the branded template - "
+                  "assets/deck_template.pptx is missing, so the styling is plain)")
         print()
 
     return exit_code
