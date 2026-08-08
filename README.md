@@ -30,15 +30,26 @@ wrong answer, and nothing downstream will flag it.
 
 Needs Python 3.11+ (for `tomllib`) and, for the charts only, matplotlib.
 
-```
-py -m shotopt mix                       # THE ANSWER: best split of tables across stakes
-py -m shotopt report                    # per-stake table, if all volume went to one stake
-py -m shotopt stake 200NL               # one stake in detail
-py -m shotopt kelly                     # the fractional-Kelly trade-off
-py -m shotopt mix --charts              # also write PNGs to output/
+Edit `config.toml`, then run it — there is no build step, the config is read fresh
+every time.
 
-py -m shotopt mix --bankroll 12000      # sweep an input without editing the file
-py -m unittest discover -s tests -t .   # the test suite
+```
+run.bat                     THE ANSWER: best split of tables across stakes
+run.bat report              per-stake table, if all volume went to one stake
+run.bat stake 200NL         one stake in detail
+run.bat kelly               the fractional-Kelly trade-off
+run.bat mix --charts        also write PNGs to output/
+
+run.bat mix --bankroll 12000    sweep an input without editing the file
+```
+
+`run.bat` finds an interpreter for you (this repo's `.venv` if it exists, else the
+`nemesis-mvp` one next door, else `py`). Equivalent, if you'd rather be explicit:
+
+```
+python run.py mix
+python -m shotopt mix
+python -m unittest discover -s tests -t .    # the test suite
 ```
 
 `--bankroll`, `--tables`, `--ruin-tolerance` and `--kelly-fraction` work before or
