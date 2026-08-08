@@ -1,8 +1,8 @@
 """Command line interface.
 
-    py -m shotopt report
-    py -m shotopt stake 200NL
-    py -m shotopt kelly
+    py -m shotopt              the answer: stake screen + efficient frontier
+    py -m shotopt report       per-stake detail, if all volume went to one stake
+    py -m shotopt stake 200NL  one stake, with its confidence interval
 
 `--bankroll`, `--tables` and `--ruin-tolerance` override the config file on any
 command, so the inputs can be swept without editing anything.
@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import estimation, kelly, mix
+from . import estimation, mix
 from .analysis import StakeReport, best_affordable, build_reports
 from .config import Config, ConfigError, load_config
 
@@ -218,15 +218,7 @@ def cmd_mix(config: Config) -> int:
             f"  {screen.stake.name:<9}  {screen.eur_per_hour:>8,.0f}  "
             f"{screen.mean_eur_per_100:>9,.2f}  {screen.stdev_eur_per_100:>11,.0f}   {verdict}"
         )
-    dropped = [s for s in screens if not s.kept]
     kept = [s for s in screens if s.kept]
-    if dropped:
-        print()
-        print(
-            f"  {len(dropped)} stake(s) ruled out before any mixing: another stake pays\n"
-            f"  more per 100 hands for less variance, so no allocation using them can\n"
-            f"  sit on the frontier."
-        )
     print()
 
     # ---- Step 2: the frontier over what survived --------------------------- #
@@ -239,24 +231,16 @@ def cmd_mix(config: Config) -> int:
     best = mix.best_allocation(allocations)
     edge = mix.frontier(allocations)
 
-    print(
-        f"STEP 2 - EFFICIENT FRONTIER   ({len(allocations):,} allocations of "
-        f"{config.tables} tables over {len(kept)} stakes, {len(edge)} undominated)"
-    )
-    print()
-    print("  Every other mix is beaten on BOTH axes by one of these. Your tolerance")
-    print("  picks the row; nothing off this list is ever worth considering.")
+    print(f"STEP 2 - EFFICIENT FRONTIER   ({len(edge)} undominated mixes over "
+          f"{len(kept)} stakes)")
     print()
     header = f"  {'EUR/hr':>8}  {'ruin':>9}  {'P(-50%)':>8}  mix"
     print(header)
     print(_rule(len(header) + 26))
     for allocation in edge:
+        marker = ""
         if best is not None and allocation.counts == best.counts:
             marker = "  <- BEST INSIDE TOLERANCE"
-        elif allocation.within_tolerance:
-            marker = ""
-        else:
-            marker = ""
         print(
             f"  {allocation.eur_per_hour:>8,.0f}  {allocation.risk_of_ruin:>9.2%}  "
             f"{allocation.drawdown_50:>8.1%}  {allocation.label}{marker}"
@@ -265,67 +249,10 @@ def cmd_mix(config: Config) -> int:
 
     if best is None:
         cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
-        print("No allocation clears your tolerance at this bankroll.")
-        print(f"The safest available is {cheapest.label}, at {cheapest.risk_of_ruin:.2%}.")
+        print(f"Nothing clears your tolerance. Safest available: {cheapest.label}, "
+              f"at {cheapest.risk_of_ruin:.2%}.")
         print()
-        return 0
-
-    # ---- Step 3: what the next step of risk actually costs ----------------- #
-    print("WHAT MOVING UP COSTS")
-    print(f"  Best inside tolerance:  {best.label}")
-    print(f"                          {best.eur_per_hour:,.0f} EUR/hr, "
-          f"ruin {best.risk_of_ruin:.2%}, P(-50%) {best.drawdown_50:.1%}")
-
-    step = mix.marginal_step_up(best, config)
-    if step is not None:
-        stepped, gained, added = step
-        ratio = stepped.risk_of_ruin / max(best.risk_of_ruin, 1e-12)
-        print(f"  One more table up:      {stepped.label}")
-        print(
-            f"                          {gained:+,.0f} EUR/hr "
-            f"({gained / max(best.eur_per_hour, 1e-9):+.0%}) for "
-            f"{ratio:,.1f}x the ruin risk"
-        )
-
-    top = edge[-1]
-    if top.counts != best.counts:
-        ratio = top.risk_of_ruin / max(best.risk_of_ruin, 1e-12)
-        gained = top.eur_per_hour - best.eur_per_hour
-        print(f"  All the way to the top: {top.label}")
-        print(
-            f"                          {gained:+,.0f} EUR/hr "
-            f"({gained / max(best.eur_per_hour, 1e-9):+.0%}) for "
-            f"{ratio:,.1f}x the ruin risk"
-        )
-    print()
-    print(
-        "A static snapshot at this bankroll, assuming tables deal independently\n"
-        "and that you can get the seats (set `max_tables` per stake if not)."
-    )
-    print()
     return 0
-
-
-def cmd_kelly(config: Config) -> None:
-    _print_header(config)
-    print()
-    print("  k     growth (share of full)   variance (share)   P(ever -50%)")
-    print(_rule(62))
-    for k in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
-        growth = k * (2.0 - k)
-        variance = kelly.fractional_variance_ratio(k)
-        if k < 2.0:
-            drawdown = f"{kelly.rescaled_drawdown_probability(0.5, k):>12.1%}"
-        else:
-            drawdown = f"{'certain':>12}"
-        marker = "  <- your setting" if abs(k - config.kelly_fraction) < 1e-9 else ""
-        print(f"  {k:<4g}  {growth:>20.0%}   {variance:>16.0%}   {drawdown}{marker}")
-    print()
-    print("  Half Kelly keeps three quarters of the growth for a quarter of the")
-    print("  variance. Betting at twice the optimal fraction earns nothing at all.")
-    print("  Since your win rate is an estimate, shade down - the penalty for")
-    print("  underbetting is mild and the penalty for overbetting is not.")
-    print()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -378,7 +305,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "stake", help="detail on a single stake", parents=[common]
     )
     stake_parser.add_argument("name")
-    subparsers.add_parser("kelly", help="the fractional-Kelly trade-off table", parents=[common])
     return parser
 
 
@@ -419,14 +345,12 @@ def main(argv: list[str] | None = None) -> int:
         cmd_report(config, reports)
     elif command == "stake":
         exit_code = cmd_stake(config, reports, args.name)
-    elif command == "kelly":
-        cmd_kelly(config)
 
     charts_dir = get("charts")
     if charts_dir is not None:
         from . import charts  # imported lazily so the text commands need no matplotlib
 
-        written = charts.write_all(reports, config, Path(charts_dir))
+        written = charts.write_all(config, Path(charts_dir))
         print(f"Charts written to {Path(charts_dir).resolve()}:")
         for path in written:
             print(f"  {path.name}")

@@ -14,9 +14,15 @@ ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
 
 # --- defaults you would rarely touch --------------------------------------- #
 
-kelly_fraction = 0.5           # half Kelly - three quarters of the growth for a
-                               # quarter of the variance, and robust to the fact
-                               # that your win rate is an estimate
+# Half Kelly, and there is no reason to touch it. "Full Kelly" is the exposure
+# that maximises long-run growth, but it is far too hot to actually play: at that
+# bankroll your risk of ruin is 13.5% and a 50%% drawdown is a coin flip. Halving
+# it keeps three quarters of the growth for a quarter of the variance. And since
+# growth is symmetric about the optimum while risk is not, being under is cheap
+# and being over is not - so with a win rate you only ever ESTIMATE, you shade
+# down. Only used by the `report` and `stake` commands; the mix ignores it.
+kelly_fraction = 0.5
+
 hands_per_hour_per_table = 75  # iPoker 5/6-max, roughly
 
 # Both of the following are ASSUMPTIONS, not measurements. They default to zero,
