@@ -199,6 +199,105 @@ class TestMarginalStep(unittest.TestCase):
         allocation = mix.evaluate((0, 0, 6), config)
         self.assertIsNone(mix.marginal_step_up(allocation, config))
 
+    def test_never_steps_into_a_redundant_stake(self):
+        # A "move up" into a dominated stake is worse on BOTH axes - not a
+        # trade-off to price, just a mistake. It should skip to the next real
+        # stake, or report that there is nowhere to go.
+        config = _config(
+            stakes=(
+                Stake("100NL", 1.0, 5.5, 92.0),
+                Stake("200NL", 2.0, 3.5, 90.0),
+                Stake("400NL", 4.0, 0.5, 90.0),  # 2.00 EUR/100 vs 200NL's 7.00
+            )
+        )
+        dominated = {i for i, s in enumerate(mix.screen_stakes(config)) if not s.kept}
+        self.assertIn(2, dominated)
+        step = mix.marginal_step_up(mix.evaluate((3, 3, 0), config), config)
+        stepped, gained, _ = step
+        self.assertEqual(stepped.counts[2], 0)
+        self.assertGreater(gained, 0)
+
+    def test_respects_a_cap_on_the_target(self):
+        config = _config(
+            stakes=(
+                Stake("50NL", 0.5, 7.0, 95.0),
+                Stake("100NL", 1.0, 5.5, 92.0),
+                Stake("200NL", 2.0, 3.5, 90.0, max_tables=2),
+            )
+        )
+        allocation = mix.evaluate((2, 2, 2), config)
+        stepped, _, _ = mix.marginal_step_up(allocation, config)
+        self.assertLessEqual(stepped.counts[2], 2)
+
+
+class TestStakeScreen(unittest.TestCase):
+    def test_a_higher_stake_earning_less_is_ruled_out(self):
+        # The case the user cares about: pay more rake and more variance for
+        # less money. 600NL at 1bb/100 makes 6 EUR/100 against 200NL's 7.
+        config = _config(
+            stakes=(
+                Stake("200NL", 2.0, 3.5, 90.0),
+                Stake("600NL", 6.0, 1.0, 88.0),
+            )
+        )
+        screens = mix.screen_stakes(config)
+        self.assertTrue(screens[0].kept)
+        self.assertFalse(screens[1].kept)
+        self.assertEqual(screens[1].dominated_by.name, "200NL")
+
+    def test_a_lower_earning_stake_with_lower_variance_survives(self):
+        # The half of the rule that EUR/hour alone would get wrong: 50NL earns
+        # less than 100NL but is also less volatile, so it is a real low-risk
+        # option and belongs on the frontier.
+        screens = {s.stake.name: s for s in mix.screen_stakes(_config())}
+        self.assertTrue(screens["50NL"].kept)
+        self.assertLess(screens["50NL"].mean_eur_per_100, screens["100NL"].mean_eur_per_100)
+        self.assertLess(screens["50NL"].stdev_eur_per_100, screens["100NL"].stdev_eur_per_100)
+
+    def test_a_capped_dominator_cannot_rule_anything_out(self):
+        # If 200NL can only give you 2 seats, it cannot absorb 600NL's tables,
+        # so 600NL still has a job and must be kept.
+        config = _config(
+            tables=6,
+            stakes=(
+                Stake("200NL", 2.0, 3.5, 90.0, max_tables=2),
+                Stake("600NL", 6.0, 1.0, 88.0),
+            ),
+        )
+        self.assertTrue(all(s.kept for s in mix.screen_stakes(config)))
+
+    def test_nothing_is_ruled_out_in_a_well_behaved_ladder(self):
+        self.assertTrue(all(s.kept for s in mix.screen_stakes(_config())))
+
+    def test_pruning_cannot_change_the_frontier(self):
+        """The property that licenses pruning as more than a display filter.
+
+        Dropping a dominated stake must give byte-identical frontier and optimum,
+        because every allocation using it is beaten on both axes by moving those
+        tables to the dominator.
+        """
+        config = _config(
+            tables=8,
+            stakes=(
+                Stake("50NL", 0.5, 7.0, 95.0),
+                Stake("100NL", 1.0, 5.5, 92.0),
+                Stake("200NL", 2.0, 3.5, 90.0),
+                Stake("600NL", 6.0, 1.0, 88.0),  # dominated by 200NL
+                Stake("1KNL", 10.0, 0.5, 88.0),  # dominated by 100NL
+            ),
+        )
+        pruned = mix.all_allocations(config, prune=True)
+        full = mix.all_allocations(config, prune=False)
+        self.assertLess(len(pruned), len(full))
+
+        self.assertEqual(
+            [a.counts for a in mix.frontier(pruned)],
+            [a.counts for a in mix.frontier(full)],
+        )
+        self.assertEqual(
+            mix.best_allocation(pruned).counts, mix.best_allocation(full).counts
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

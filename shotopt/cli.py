@@ -33,14 +33,18 @@ def _rule(width: int) -> str:
     return "-" * width
 
 
-def _print_header(config: Config) -> None:
+def _print_header(config: Config, kelly_fraction: bool = True) -> None:
     print()
-    print(
+    line = (
         f"Bankroll EUR {_eur(config.bankroll_eur)}   "
         f"{config.tables} tables   "
-        f"ruin tolerance {config.ruin_tolerance:.2%}   "
-        f"Kelly k={config.kelly_fraction:g}"
+        f"ruin tolerance {config.ruin_tolerance:.2%}"
     )
+    # The Kelly fraction plays no part in the mix answer, so it is not shown
+    # there - it would only invite the reader to look for where it applies.
+    if kelly_fraction:
+        line += f"   Kelly k={config.kelly_fraction:g}"
+    print(line)
     notes = []
     if config.winrate_haircut_bb_per_table:
         notes.append(
@@ -193,75 +197,110 @@ def cmd_stake(config: Config, reports: list[StakeReport], name: str) -> int:
 
 def cmd_mix(config: Config) -> int:
     """The main event: which distribution of tables across stakes is best."""
-    _print_header(config)
+    _print_header(config, kelly_fraction=False)
+
+    # ---- Step 1: price each stake alone, and drop the redundant ones -------- #
+    screens = mix.screen_stakes(config)
+    print()
+    print(f"STEP 1 - STAKE SCREEN   (if all {config.tables} tables were at one stake)")
+    print()
+    header = f"  {'stake':<9}  {'EUR/hr':>8}  {'EUR/100':>9}  {'sd EUR/100':>11}   verdict"
+    print(header)
+    print(_rule(len(header) + 26))
+    for screen in screens:
+        if screen.kept:
+            verdict = "keep"
+        else:
+            verdict = (
+                f"REDUNDANT - {screen.dominated_by.name} earns more at lower variance"
+            )
+        print(
+            f"  {screen.stake.name:<9}  {screen.eur_per_hour:>8,.0f}  "
+            f"{screen.mean_eur_per_100:>9,.2f}  {screen.stdev_eur_per_100:>11,.0f}   {verdict}"
+        )
+    dropped = [s for s in screens if not s.kept]
+    kept = [s for s in screens if s.kept]
+    if dropped:
+        print()
+        print(
+            f"  {len(dropped)} stake(s) ruled out before any mixing: another stake pays\n"
+            f"  more per 100 hands for less variance, so no allocation using them can\n"
+            f"  sit on the frontier."
+        )
     print()
 
+    # ---- Step 2: the frontier over what survived --------------------------- #
     try:
         allocations = mix.all_allocations(config)
     except mix.AllocationLimit as exc:
         print(f"cannot enumerate allocations: {exc}", file=sys.stderr)
         return 2
 
-    inside = [a for a in allocations if a.within_tolerance]
-    print(
-        f"{len(allocations):,} ways to split {config.tables} tables across "
-        f"{len(config.stakes)} stakes; {len(inside):,} stay inside "
-        f"{config.ruin_tolerance:.2%} ruin."
-    )
-    print()
-
     best = mix.best_allocation(allocations)
-    if best is None:
-        cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
-        print("No allocation clears your tolerance at this bankroll.")
-        print(f"The safest available is {cheapest.label}, at {cheapest.risk_of_ruin:.2%}.")
-        return 0
+    edge = mix.frontier(allocations)
 
-    single = max(
-        (a for a in allocations if sum(1 for c in a.counts if c) == 1 and a.within_tolerance),
-        key=lambda a: a.eur_per_hour,
-        default=None,
+    print(
+        f"STEP 2 - EFFICIENT FRONTIER   ({len(allocations):,} allocations of "
+        f"{config.tables} tables over {len(kept)} stakes, {len(edge)} undominated)"
     )
-
-    print("BEST MIX")
-    print(f"  {best.label}")
-    print(f"  {best.eur_per_hour:,.0f} EUR/hr   ruin {best.risk_of_ruin:.2%}   "
-          f"P(-50%) {best.drawdown_50:.1%}")
-    if single is not None and single.counts != best.counts:
-        uplift = best.eur_per_hour - single.eur_per_hour
-        print(
-            f"  Against the best single-stake option ({single.label}, "
-            f"{single.eur_per_hour:,.0f} EUR/hr): +{uplift:,.0f} EUR/hr, "
-            f"+{uplift / max(single.eur_per_hour, 1e-9):.0%}."
-        )
     print()
-
-    step = mix.marginal_step_up(best, config)
-    if step is not None:
-        stepped, gained, added = step
-        verdict = "inside tolerance" if stepped.within_tolerance else "OUTSIDE tolerance"
-        print("ONE MORE TABLE UP")
-        print(f"  {stepped.label}")
-        print(f"  buys {gained:+,.0f} EUR/hr, costs {added:+.2%} ruin -> {verdict}")
-        print()
-
-    print("EFFICIENT FRONTIER  (the only mixes worth considering, at any tolerance)")
+    print("  Every other mix is beaten on BOTH axes by one of these. Your tolerance")
+    print("  picks the row; nothing off this list is ever worth considering.")
     print()
     header = f"  {'EUR/hr':>8}  {'ruin':>9}  {'P(-50%)':>8}  mix"
     print(header)
-    print(_rule(len(header) + 24))
-    for allocation in mix.frontier(allocations):
-        marker = " <- best inside tolerance" if allocation.counts == best.counts else ""
+    print(_rule(len(header) + 26))
+    for allocation in edge:
+        if best is not None and allocation.counts == best.counts:
+            marker = "  <- BEST INSIDE TOLERANCE"
+        elif allocation.within_tolerance:
+            marker = ""
+        else:
+            marker = ""
         print(
             f"  {allocation.eur_per_hour:>8,.0f}  {allocation.risk_of_ruin:>9.2%}  "
             f"{allocation.drawdown_50:>8.1%}  {allocation.label}{marker}"
         )
     print()
+
+    if best is None:
+        cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
+        print("No allocation clears your tolerance at this bankroll.")
+        print(f"The safest available is {cheapest.label}, at {cheapest.risk_of_ruin:.2%}.")
+        print()
+        return 0
+
+    # ---- Step 3: what the next step of risk actually costs ----------------- #
+    print("WHAT MOVING UP COSTS")
+    print(f"  Best inside tolerance:  {best.label}")
+    print(f"                          {best.eur_per_hour:,.0f} EUR/hr, "
+          f"ruin {best.risk_of_ruin:.2%}, P(-50%) {best.drawdown_50:.1%}")
+
+    step = mix.marginal_step_up(best, config)
+    if step is not None:
+        stepped, gained, added = step
+        ratio = stepped.risk_of_ruin / max(best.risk_of_ruin, 1e-12)
+        print(f"  One more table up:      {stepped.label}")
+        print(
+            f"                          {gained:+,.0f} EUR/hr "
+            f"({gained / max(best.eur_per_hour, 1e-9):+.0%}) for "
+            f"{ratio:,.1f}x the ruin risk"
+        )
+
+    top = edge[-1]
+    if top.counts != best.counts:
+        ratio = top.risk_of_ruin / max(best.risk_of_ruin, 1e-12)
+        gained = top.eur_per_hour - best.eur_per_hour
+        print(f"  All the way to the top: {top.label}")
+        print(
+            f"                          {gained:+,.0f} EUR/hr "
+            f"({gained / max(best.eur_per_hour, 1e-9):+.0%}) for "
+            f"{ratio:,.1f}x the ruin risk"
+        )
+    print()
     print(
         "A static snapshot at this bankroll, assuming tables deal independently\n"
-        "and you can actually get the seats (set `max_tables` per stake if not).\n"
-        "The dynamic version - move up through one threshold, down through\n"
-        "another - is the simulation, and is not built yet."
+        "and that you can get the seats (set `max_tables` per stake if not)."
     )
     print()
     return 0

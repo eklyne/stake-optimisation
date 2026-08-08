@@ -37,8 +37,10 @@ from .config import Config, Stake
 
 __all__ = [
     "Allocation",
+    "StakeScreen",
     "MAX_ALLOCATIONS",
     "AllocationLimit",
+    "screen_stakes",
     "enumerate_allocations",
     "evaluate",
     "all_allocations",
@@ -84,6 +86,85 @@ class Allocation:
     @property
     def stdev_eur_per_100(self) -> float:
         return math.sqrt(self.variance_eur_per_100)
+
+
+@dataclass(frozen=True)
+class StakeScreen:
+    """One stake, priced on its own, before any mixing."""
+
+    stake: Stake
+    mean_eur_per_100: float
+    """Expected euros per 100 hands at this stake - the EV side, in money."""
+    stdev_eur_per_100: float
+    """Euro standard deviation per 100 hands - the risk side."""
+    eur_per_hour: float
+    dominated_by: Stake | None
+    """Set when another stake earns at least as much at no more variance."""
+
+    @property
+    def kept(self) -> bool:
+        return self.dominated_by is None
+
+
+def screen_stakes(config: Config) -> list[StakeScreen]:
+    """Price each stake on its own, and rule out the redundant ones.
+
+    A stake is REDUNDANT when some other stake earns at least as much per 100
+    hands AND carries no more variance. Both halves are needed: a stake that
+    earns less but is also less volatile is a legitimate low-risk option and
+    belongs on the frontier. In practice euro variance scales with the square of
+    the stake, so a higher stake with a worse euro win rate is dominated by the
+    one below it - which is the case worth catching, because it means paying more
+    rake and more variance for less money.
+
+    Dominance is only safe when the dominating stake can actually absorb the
+    tables. If it is capped below the table count, the dominated stake still has
+    a job to do, so it is kept - see the max_tables check below.
+
+    Removing a dominated stake CANNOT change the answer: any allocation using it
+    is improved on both axes by moving those tables to the dominator, so it never
+    appears on the frontier. That equivalence is asserted in the tests, which is
+    what licenses using this as a pruning step rather than only as a display.
+    """
+    stakes = config.stakes
+    tables = config.tables
+
+    means, stdevs, hourlies = [], [], []
+    for stake in stakes:
+        winrate = rates.effective_winrate(
+            stake.winrate_bb100, tables, config.winrate_haircut_bb_per_table
+        )
+        mean = winrate * stake.bb_eur
+        means.append(mean)
+        stdevs.append(stake.stdev_bb100 * stake.bb_eur)
+        hourlies.append(
+            mean * rates.hands_per_hour(tables, config.hands_per_hour_per_table) / 100.0
+        )
+
+    screens = []
+    for index, stake in enumerate(stakes):
+        dominated_by = None
+        for other, candidate in enumerate(stakes):
+            if other == index:
+                continue
+            # The dominator must be able to take every table on its own.
+            if candidate.max_tables is not None and candidate.max_tables < tables:
+                continue
+            at_least_as_good = means[other] >= means[index] and stdevs[other] <= stdevs[index]
+            strictly_better = means[other] > means[index] or stdevs[other] < stdevs[index]
+            if at_least_as_good and strictly_better:
+                dominated_by = candidate
+                break
+        screens.append(
+            StakeScreen(
+                stake=stake,
+                mean_eur_per_100=means[index],
+                stdev_eur_per_100=stdevs[index],
+                eur_per_hour=hourlies[index],
+                dominated_by=dominated_by,
+            )
+        )
+    return screens
 
 
 def _count_allocations(tables: int, caps: tuple[int, ...]) -> int:
@@ -182,15 +263,27 @@ def evaluate(counts: tuple[int, ...], config: Config) -> Allocation:
     )
 
 
-def all_allocations(config: Config) -> list[Allocation]:
-    """Every allocation of the configured table count, scored."""
+def all_allocations(config: Config, prune: bool = True) -> list[Allocation]:
+    """Every allocation of the configured table count, scored.
+
+    With `prune` (the default), stakes ruled out by `screen_stakes` are excluded.
+    That cannot change the frontier - it only removes allocations that something
+    else already beats on both axes - but it does shrink the search. Pass
+    prune=False to enumerate the lot, which is what the equivalence test does.
+    """
     # `is not None`, not truthiness: max_tables = 0 means "I cannot get a seat
     # here at all", which is a meaningful setting and must not read as "no cap".
-    caps = tuple(
+    caps = [
         min(stake.max_tables, config.tables) if stake.max_tables is not None else config.tables
         for stake in config.stakes
-    )
-    return [evaluate(counts, config) for counts in enumerate_allocations(config.tables, caps)]
+    ]
+    if prune:
+        for index, screen in enumerate(screen_stakes(config)):
+            if not screen.kept:
+                caps[index] = 0
+    return [
+        evaluate(counts, config) for counts in enumerate_allocations(config.tables, tuple(caps))
+    ]
 
 
 def best_allocation(allocations: list[Allocation]) -> Allocation | None:
@@ -231,17 +324,31 @@ def marginal_step_up(
     Returns (new allocation, EUR/hour gained, ruin added), or None if there is no
     table that can move up. This is the question that actually gets asked at the
     table - not "what is optimal" but "can I put one more table up a level?"
+
+    Steps only to stakes that survived the screen, and only to ones with room
+    under their cap. Stepping into a redundant stake would report a move that is
+    worse on both axes, which is not a trade-off - it is just a mistake.
     """
     counts = list(allocation.counts)
-    # Move the highest-stake table that still has somewhere to go.
-    for index in range(len(counts) - 2, -1, -1):
-        if counts[index] > 0:
-            counts[index] -= 1
-            counts[index + 1] += 1
-            stepped = evaluate(tuple(counts), config)
-            return (
-                stepped,
-                stepped.eur_per_hour - allocation.eur_per_hour,
-                stepped.risk_of_ruin - allocation.risk_of_ruin,
-            )
+    caps = [
+        min(stake.max_tables, config.tables) if stake.max_tables is not None else config.tables
+        for stake in config.stakes
+    ]
+    kept = [index for index, screen in enumerate(screen_stakes(config)) if screen.kept]
+
+    # Move the highest-stake table that has somewhere real to go.
+    for index in range(len(counts) - 1, -1, -1):
+        if counts[index] <= 0:
+            continue
+        target = next((i for i in kept if i > index and counts[i] < caps[i]), None)
+        if target is None:
+            continue
+        counts[index] -= 1
+        counts[target] += 1
+        stepped = evaluate(tuple(counts), config)
+        return (
+            stepped,
+            stepped.eur_per_hour - allocation.eur_per_hour,
+            stepped.risk_of_ruin - allocation.risk_of_ruin,
+        )
     return None

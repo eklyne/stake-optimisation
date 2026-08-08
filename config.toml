@@ -71,3 +71,12 @@ bb_eur = 6.00
 winrate_bb100 = 1.0
 stdev_bb100 = 88.0
 hands = 6000
+
+[[stake]]
+name = "1KNL"
+bb_eur = 10.00
+winrate_bb100 = 0.5
+stdev_bb100 = 88.0
+# No `hands` - never played it. The tool will treat the win rate above as known,
+# which it very much is not: it is a guess, and the whole stake stands or falls
+# on it.
