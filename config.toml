@@ -1,0 +1,67 @@
+# shot-take-optimisation
+#
+# EVERY NUMBER BELOW IS A PLACEHOLDER. Replace them with your own before reading
+# anything into the output - the tool is only as good as the win rates you feed
+# it, and a made-up standard deviation produces a confident, wrong answer.
+
+# --- the four inputs ------------------------------------------------------- #
+
+bankroll_eur = 5000            # 1. bankroll, in euros
+tables = 12                    # 2. tables played simultaneously
+ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
+
+# 3. win rate and standard deviation per stake: the [[stake]] blocks below.
+
+# --- defaults you would rarely touch --------------------------------------- #
+
+kelly_fraction = 0.5           # half Kelly - three quarters of the growth for a
+                               # quarter of the variance, and robust to the fact
+                               # that your win rate is an estimate
+hands_per_hour_per_table = 75  # iPoker 5/6-max, roughly
+
+# Both of the following are ASSUMPTIONS, not measurements. They default to zero,
+# meaning the textbook independent case. Any non-zero value here is a number you
+# chose to believe.
+winrate_haircut_bb_per_table = 0.0  # bb/100 lost per table beyond the first
+table_correlation = 0.0             # 0 = tables independent; raises effective
+                                    # variance, and therefore the roll required
+
+# --- stakes ---------------------------------------------------------------- #
+# `hands` is optional. Supply it and you get a confidence interval and the
+# shaded (conservative) sizing; omit it and the tool treats the win rate as
+# known, which it never is.
+
+[[stake]]
+name = "50NL"
+bb_eur = 0.50
+winrate_bb100 = 7.0
+stdev_bb100 = 95.0
+hands = 150000
+
+[[stake]]
+name = "100NL"
+bb_eur = 1.00
+winrate_bb100 = 5.5
+stdev_bb100 = 92.0
+hands = 120000
+
+[[stake]]
+name = "200NL"
+bb_eur = 2.00
+winrate_bb100 = 3.5
+stdev_bb100 = 90.0
+hands = 90000
+
+[[stake]]
+name = "400NL"
+bb_eur = 4.00
+winrate_bb100 = 2.0
+stdev_bb100 = 88.0
+hands = 25000
+
+[[stake]]
+name = "600NL"
+bb_eur = 6.00
+winrate_bb100 = 1.0
+stdev_bb100 = 88.0
+hands = 6000
