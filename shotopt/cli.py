@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import estimation, mix
+from . import estimation, export, mix
 from .analysis import StakeReport, best_affordable, build_reports
 from .config import Config, ConfigError, load_config
 
@@ -195,8 +195,13 @@ def cmd_stake(config: Config, reports: list[StakeReport], name: str) -> int:
     return 0
 
 
-def cmd_mix(config: Config) -> int:
-    """The main event: which distribution of tables across stakes is best."""
+def cmd_mix(config: Config, output_dir: Path) -> int:
+    """The main event: which distribution of tables across stakes is best.
+
+    Prints both tables and writes each as a CSV. The CSVs are unconditional -
+    they cost nothing, need no dependency, and a table you can only read in a
+    terminal is a table you cannot pivot.
+    """
     _print_header(config, kelly_fraction=False)
 
     # ---- Step 1: price each stake alone, and drop the redundant ones -------- #
@@ -252,6 +257,12 @@ def cmd_mix(config: Config) -> int:
         print(f"Nothing clears your tolerance. Safest available: {cheapest.label}, "
               f"at {cheapest.risk_of_ruin:.2%}.")
         print()
+
+    written = export.write_tables(screens, edge, config, best, output_dir)
+    print(f"Tables written to {output_dir.resolve()}:")
+    for path in written:
+        print(f"  {path.name}")
+    print()
     return 0
 
 
@@ -283,12 +294,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="override Kelly fraction",
     )
     common.add_argument(
-        "--charts",
-        nargs="?",
-        const="output",
+        "--output",
+        type=Path,
         default=argparse.SUPPRESS,
         metavar="DIR",
-        help="also write the PNG charts (default directory: output/)",
+        help="where the CSVs and charts go (default: output/)",
+    )
+    common.add_argument(
+        "--charts",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="also render the frontier PNG",
     )
 
     parser = argparse.ArgumentParser(
@@ -309,12 +325,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 DEFAULT_ARGV = ["mix", "--charts"]
-"""What a bare `run.bat` does: the full job, text and charts.
+"""What a bare `run.bat` does: the full job, text, CSVs and chart.
 
-Running the tool with no arguments should refresh everything, not silently skip
-the charts and leave stale PNGs on disk. Any explicit subcommand opts out again -
-`run.bat mix` prints without rendering.
+Running with no arguments should refresh everything, not silently skip the chart
+and leave a stale PNG on disk. Naming a subcommand opts out of rendering; the
+CSVs are written either way, since they are free.
 """
+
+DEFAULT_OUTPUT_DIR = Path("output")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -337,21 +355,21 @@ def main(argv: list[str] | None = None) -> int:
 
     reports = build_reports(config)
     command = args.command or "mix"
+    output_dir = get("output") or DEFAULT_OUTPUT_DIR
 
     exit_code = 0
     if command == "mix":
-        exit_code = cmd_mix(config)
+        exit_code = cmd_mix(config, output_dir)
     elif command == "report":
         cmd_report(config, reports)
     elif command == "stake":
         exit_code = cmd_stake(config, reports, args.name)
 
-    charts_dir = get("charts")
-    if charts_dir is not None:
+    if get("charts"):
         from . import charts  # imported lazily so the text commands need no matplotlib
 
-        written = charts.write_all(config, Path(charts_dir))
-        print(f"Charts written to {Path(charts_dir).resolve()}:")
+        written = charts.write_all(config, output_dir)
+        print(f"Chart written to {output_dir.resolve()}:")
         for path in written:
             print(f"  {path.name}")
         print()

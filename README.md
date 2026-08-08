@@ -38,17 +38,30 @@ Edit `config.toml`, then run it. There is no build step and nothing to rebuild �
 the config is read fresh on every run.
 
 ```
-run.bat                     THE ANSWER: stake screen + frontier + output\frontier.png
-run.bat mix                 the same, text only
+run.bat                     THE ANSWER: both tables printed, both as CSV, plus the chart
+run.bat mix                 the same, minus the chart
 run.bat mix --bankroll 12000    sweep an input without editing the file
+run.bat --output results        put the files somewhere else
 
 run.bat report              secondary: per-stake detail if all volume went to one stake
 run.bat stake 200NL         secondary: one stake, with its confidence interval
 ```
 
-**Bare `run.bat` is the whole job** — it prints the answer and rewrites the chart,
-so the PNG can never be stale against the config. Naming a subcommand opts out of
-rendering.
+Everything lands in `output\`:
+
+| file | what |
+|---|---|
+| `stake_screen.csv` | one row per stake, including the ruled-out ones and why |
+| `frontier.csv` | one row per undominated mix, with a table-count column per stake |
+| `frontier.png` | the chart |
+
+**Bare `run.bat` is the whole job**, so nothing in `output\` can be stale against
+the config. The CSVs are written on every `mix` run (they're free); only the chart
+needs `--charts`, which the bare invocation passes for you.
+
+The CSVs keep full precision on the risk columns — rounding ruin to the two
+decimals the terminal shows would collapse every safe mix to `0.00%` and make the
+column useless for sorting.
 
 `run.bat` is a batch file — run it directly (`.\run.bat` in PowerShell), not
 through Python. It finds an interpreter itself: this repo's `.venv`, else a
@@ -219,7 +232,8 @@ shotopt/
   rates.py           bb/100 -> EUR/hour
   analysis.py        the only module that knows about both config and maths
   charts.py          the frontier chart
+  export.py          CSV copies of the two printed tables
   cli.py             the command line
-tests/               85 tests, no dependencies (pytest or stdlib unittest)
+tests/               98 tests, no dependencies (pytest or stdlib unittest)
 docs/theory.md       derivations and where they come from
 ```
