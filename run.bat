@@ -22,7 +22,4 @@ pushd "%HERE%"
 set "CODE=%ERRORLEVEL%"
 popd
 
-rem Keep the window open when launched by double-click rather than from a shell.
-echo %CMDCMDLINE% | find /i "/c" >nul && pause
-
 exit /b %CODE%
