@@ -31,30 +31,35 @@ wrong answer, and nothing downstream will flag it.
 Needs Python 3.11+ (for `tomllib`) and, for the charts only, matplotlib.
 
 ```
-py -m shotopt report                    # the main table
+py -m shotopt mix                       # THE ANSWER: best split of tables across stakes
+py -m shotopt report                    # per-stake table, if all volume went to one stake
 py -m shotopt stake 200NL               # one stake in detail
 py -m shotopt kelly                     # the fractional-Kelly trade-off
-py -m shotopt report --charts           # also write PNGs to output/
+py -m shotopt mix --charts              # also write PNGs to output/
 
-py -m shotopt report --bankroll 12000   # sweep an input without editing the file
+py -m shotopt mix --bankroll 12000      # sweep an input without editing the file
 py -m unittest discover -s tests -t .   # the test suite
 ```
 
 `--bankroll`, `--tables`, `--ruin-tolerance` and `--kelly-fraction` work before or
-after the subcommand.
+after the subcommand. `mix` is the default when no subcommand is given.
 
 Sample output:
 
 ```
-stake         EUR/hr   buy-ins       ruin         roll for tol.    Kelly roll    P(-50%)
-----------------------------------------------------------------------------------------
-50NL              32       100      0.00%  OK      1,484 (30bi)         1,289       0.0%
-100NL             50        50      0.15%  OK      3,543 (35bi)         3,078       3.9%
-200NL             63        25     11.53%  NO     10,658 (53bi)         9,257      34.0%
+1,820 ways to split 12 tables across 5 stakes; 36 stay inside 1.00% ruin.
 
-VERDICT: 100NL - the highest EUR/hour that stays inside 1.00% ruin
-         200NL needs EUR 10,658 - another EUR 5,658.
+BEST MIX
+  10x 100NL + 2x 200NL
+  52 EUR/hr   ruin 0.99%   P(-50%) 9.9%
+  Against the best single-stake option (12x 100NL, 50 EUR/hr): +2 EUR/hr, +5%.
+
+ONE MORE TABLE UP
+  10x 100NL + 1x 200NL + 1x 400NL
+  buys +1 EUR/hr, costs +4.49% ruin -> OUTSIDE tolerance
 ```
+
+followed by the efficient frontier — every mix nothing else beats on both axes.
 
 ## The maths
 
@@ -107,18 +112,45 @@ Two more limits worth knowing, which no config knob fixes:
   bettor respectively. Real poker sits between them: you rescale, but in discrete
   jumps when you change stake. Don't mix them up.
 
+## The mix, and why it needs no simulation
+
+Picking one stake for all your volume is a false constraint — volume is already
+divisible across tables, so the real decision variable is the **share of
+simultaneous tables at each stake**. 12× 100NL can be 10× 100NL + 2× 200NL, and
+risk scales smoothly with the dial instead of jumping when you "take a shot".
+
+Tables deal independent hands, so a mix has a computable mean and variance per 100
+hands, in euros:
+
+    mean = Σ (nₛ/T) · μₛ · vₛ
+    var  = Σ (nₛ/T) · σₛ² · vₛ²
+
+with nₛ tables at stake s, T tables total, vₛ the big blind in euros. Both are in
+euros, so the ordinary ruin formula applies to the aggregate directly. Set every
+table to one stake and it collapses *exactly* to that stake's own row in `report` —
+asserted in the tests, since the two are computed by different routes (big blinds
+vs euros) and a unit error would show up there.
+
+So the optimum is found by **enumerating every allocation** and taking the highest
+EUR/hour inside tolerance. No sampling, no convergence question, no search
+heuristic: 12 tables over 5 stakes is 1,820 allocations, and the answer is exact.
+
+Set `max_tables` on a stake if you cannot realistically get that many seats — it is
+the constraint most likely to bind, and without it the optimiser will happily
+allocate eight tables to a stake that never has eight good games running.
+
 ## What this is not (yet)
 
-The closed forms above are deliberately step one. They cannot price the thing that
-actually makes shot-taking interesting: a **continuous mix of tables across
-stakes** (10× 100NL + 2× 200NL), governed by a **policy** — move up through one
-threshold, down through another, with hysteresis between them — where the EV cost
-of a forced move-down is *paid* by the simulation rather than assumed.
+Everything above is a **static** snapshot at one bankroll. The dynamic problem is
+not solved: the roll moves while you play it, so the right mix is a function of the
+bankroll you have *now*, and the object to optimise is a **policy** — move up
+through one threshold, down through another, with hysteresis between them so paths
+near the boundary don't thrash. That is where the EV cost of a forced move-down
+gets *paid* by the model rather than assumed, and it needs a Monte Carlo.
 
-That is a Monte Carlo, and it comes next. This repo is what it will be validated
-against: a simulation that disagrees with these formulas in the simple case is a
-simulation with a bug. The maths modules take and return plain floats precisely so
-the sim can import them as its oracle.
+This repo is what that simulation will be validated against: one that disagrees
+with these formulas in the static case has a bug. The maths modules take and return
+plain floats precisely so the sim can import them as its oracle.
 
 ## Layout
 
@@ -130,9 +162,10 @@ shotopt/
   ruin.py            risk of ruin, drawdown, effective sigma
   estimation.py      standard errors, intervals, shaded win rates
   rates.py           bb/100 -> EUR/hour
+  mix.py             enumerate and score every table allocation
   analysis.py        the only module that knows about both config and maths
-  charts.py          five PNGs
+  charts.py          six PNGs
   cli.py             the command line
-tests/               54 tests, stdlib unittest, no dependencies
+tests/               78 tests, stdlib unittest, no dependencies
 docs/theory.md       derivations and where they come from
 ```

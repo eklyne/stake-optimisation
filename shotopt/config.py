@@ -21,7 +21,7 @@ __all__ = ["Stake", "Config", "ConfigError", "load_config", "DEFAULT_CONFIG_PATH
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
 _STAKE_REQUIRED = ("name", "bb_eur", "winrate_bb100", "stdev_bb100")
-_STAKE_KNOWN = _STAKE_REQUIRED + ("hands",)
+_STAKE_KNOWN = _STAKE_REQUIRED + ("hands", "max_tables")
 _TOP_LEVEL_KNOWN = frozenset(
     {
         "bankroll_eur",
@@ -49,6 +49,12 @@ class Stake:
     winrate_bb100: float
     stdev_bb100: float
     hands: int | None = None
+    max_tables: int | None = None
+    """Seats you can realistically get at this stake at once. None = no limit.
+
+    A real constraint on the mix, and the one most likely to bind: the optimiser
+    will happily allocate eight tables to a stake that never has eight good games
+    running."""
 
     @property
     def buyin_eur(self) -> float:
@@ -130,12 +136,20 @@ def _parse_stake(raw: dict, index: int) -> Stake:
         if isinstance(hands, bool) or not isinstance(hands, int) or hands <= 0:
             raise ConfigError(f"{where}: hands must be a positive integer, got {hands!r}")
 
+    max_tables = raw.get("max_tables")
+    if max_tables is not None:
+        if isinstance(max_tables, bool) or not isinstance(max_tables, int) or max_tables < 0:
+            raise ConfigError(
+                f"{where}: max_tables must be a non-negative integer, got {max_tables!r}"
+            )
+
     return Stake(
         name=name,
         bb_eur=bb_eur,
         winrate_bb100=winrate,
         stdev_bb100=stdev,
         hands=hands,
+        max_tables=max_tables,
     )
 
 

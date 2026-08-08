@@ -30,6 +30,12 @@ table_correlation = 0.0             # 0 = tables independent; raises effective
 # `hands` is optional. Supply it and you get a confidence interval and the
 # shaded (conservative) sizing; omit it and the tool treats the win rate as
 # known, which it never is.
+#
+# `max_tables` is also optional: the number of seats you can realistically get
+# at this stake at once. Omit it for no limit. This is the constraint most
+# likely to bind on the mix - without it the optimiser will cheerfully put four
+# tables on a stake that rarely has four good games running. `max_tables = 0`
+# excludes a stake entirely.
 
 [[stake]]
 name = "50NL"

@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import estimation, kelly
+from . import estimation, kelly, mix
 from .analysis import StakeReport, best_affordable, build_reports
 from .config import Config, ConfigError, load_config
 
@@ -191,6 +191,82 @@ def cmd_stake(config: Config, reports: list[StakeReport], name: str) -> int:
     return 0
 
 
+def cmd_mix(config: Config) -> int:
+    """The main event: which distribution of tables across stakes is best."""
+    _print_header(config)
+    print()
+
+    try:
+        allocations = mix.all_allocations(config)
+    except mix.AllocationLimit as exc:
+        print(f"cannot enumerate allocations: {exc}", file=sys.stderr)
+        return 2
+
+    inside = [a for a in allocations if a.within_tolerance]
+    print(
+        f"{len(allocations):,} ways to split {config.tables} tables across "
+        f"{len(config.stakes)} stakes; {len(inside):,} stay inside "
+        f"{config.ruin_tolerance:.2%} ruin."
+    )
+    print()
+
+    best = mix.best_allocation(allocations)
+    if best is None:
+        cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
+        print("No allocation clears your tolerance at this bankroll.")
+        print(f"The safest available is {cheapest.label}, at {cheapest.risk_of_ruin:.2%}.")
+        return 0
+
+    single = max(
+        (a for a in allocations if sum(1 for c in a.counts if c) == 1 and a.within_tolerance),
+        key=lambda a: a.eur_per_hour,
+        default=None,
+    )
+
+    print("BEST MIX")
+    print(f"  {best.label}")
+    print(f"  {best.eur_per_hour:,.0f} EUR/hr   ruin {best.risk_of_ruin:.2%}   "
+          f"P(-50%) {best.drawdown_50:.1%}")
+    if single is not None and single.counts != best.counts:
+        uplift = best.eur_per_hour - single.eur_per_hour
+        print(
+            f"  Against the best single-stake option ({single.label}, "
+            f"{single.eur_per_hour:,.0f} EUR/hr): +{uplift:,.0f} EUR/hr, "
+            f"+{uplift / max(single.eur_per_hour, 1e-9):.0%}."
+        )
+    print()
+
+    step = mix.marginal_step_up(best, config)
+    if step is not None:
+        stepped, gained, added = step
+        verdict = "inside tolerance" if stepped.within_tolerance else "OUTSIDE tolerance"
+        print("ONE MORE TABLE UP")
+        print(f"  {stepped.label}")
+        print(f"  buys {gained:+,.0f} EUR/hr, costs {added:+.2%} ruin -> {verdict}")
+        print()
+
+    print("EFFICIENT FRONTIER  (the only mixes worth considering, at any tolerance)")
+    print()
+    header = f"  {'EUR/hr':>8}  {'ruin':>9}  {'P(-50%)':>8}  mix"
+    print(header)
+    print(_rule(len(header) + 24))
+    for allocation in mix.frontier(allocations):
+        marker = " <- best inside tolerance" if allocation.counts == best.counts else ""
+        print(
+            f"  {allocation.eur_per_hour:>8,.0f}  {allocation.risk_of_ruin:>9.2%}  "
+            f"{allocation.drawdown_50:>8.1%}  {allocation.label}{marker}"
+        )
+    print()
+    print(
+        "A static snapshot at this bankroll, assuming tables deal independently\n"
+        "and you can actually get the seats (set `max_tables` per stake if not).\n"
+        "The dynamic version - move up through one threshold, down through\n"
+        "another - is the simulation, and is not built yet."
+    )
+    print()
+    return 0
+
+
 def cmd_kelly(config: Config) -> None:
     _print_header(config)
     print()
@@ -255,7 +331,10 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("report", help="one row per stake (default)", parents=[common])
+    subparsers.add_parser(
+        "mix", help="best distribution of tables across stakes (default)", parents=[common]
+    )
+    subparsers.add_parser("report", help="one row per stake", parents=[common])
     stake_parser = subparsers.add_parser(
         "stake", help="detail on a single stake", parents=[common]
     )
@@ -281,10 +360,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     reports = build_reports(config)
-    command = args.command or "report"
+    command = args.command or "mix"
 
     exit_code = 0
-    if command == "report":
+    if command == "mix":
+        exit_code = cmd_mix(config)
+    elif command == "report":
         cmd_report(config, reports)
     elif command == "stake":
         exit_code = cmd_stake(config, reports, args.name)

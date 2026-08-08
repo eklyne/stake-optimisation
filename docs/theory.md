@@ -157,28 +157,62 @@ Stated plainly, because the tool cannot fix them:
 - **Ruin here assumes an infinite horizon.** "Ever" is a long time. Over a finite
   number of hands the true probability is lower, so these figures are conservative.
 
-## What comes next
+## The static mix (built)
 
-The gap this repo does not close: shot-taking is conventionally binary — you play
-50NL, then one day you "take a shot" at 100NL and your whole session moves up. But
-a multi-tabler never has to switch anything. Volume is already divisible across
-tables, so the real decision variable is the **share of simultaneous tables at each
-stake**, and shot-taking becomes a dial rather than a step.
+Shot-taking is conventionally binary — you play 50NL, then one day you "take a
+shot" at 100NL and your whole session moves up. But a multi-tabler never has to
+switch anything. Volume is already divisible across tables, so the real decision
+variable is the **share of simultaneous tables at each stake**, and shot-taking
+becomes a dial rather than a step. This also restores the divisibility Kelly
+assumes: the exposure you want no longer has to round to a rung.
 
-That is a portfolio problem, and the interesting part is that the allocation is
-**dynamic**: the roll moves while you play it, so the right mix is a function of
-the bankroll you have *now*. The object to search for is not a single best
+That much needs no simulation. Tables deal independent hands, so for an allocation
+of `nₛ` tables at stake s out of `T` total, per 100 hands dealt across all tables:
+
+    mean = Σ (nₛ/T) · μₛ · vₛ          euros
+    var  = Σ (nₛ/T) · σₛ² · vₛ²        euros squared
+
+Both in euros, so `R = exp(-2 · mean · B / var)` applies directly to the aggregate.
+Two properties make this trustworthy rather than merely plausible:
+
+- **It reduces correctly.** All tables on one stake reproduces that stake's own
+  single-stake numbers exactly — asserted in `tests/test_mix.py` across two
+  correlation settings, and worth having because the two paths compute in different
+  units (big blinds vs euros).
+- **It is exact, not sampled.** The allocation space is small enough to enumerate
+  in full (1,820 for 12 tables over 5 stakes), so the optimum is found by brute
+  force. There is no convergence question and no search heuristic to distrust.
+
+The output is an efficient frontier of allocations, plus the marginal question that
+actually gets asked at the table: *what does one more table a level up buy me, and
+what does it cost?*
+
+## The dynamic policy (not built)
+
+What remains is that the allocation is **dynamic**: the roll moves while you play
+it, so the right mix is a function of the bankroll you have *now*, not the one you
+started the month with. The object to search for is then not a single best
 allocation but a **policy** — if the roll changes by X, change the mix by Y — with
 hysteresis between the move-up and move-down thresholds so paths near the boundary
-do not thrash. Kelly supplies the rule for free: recompute `f* = μ/σ²` against the
-current bankroll and round to the nearest achievable mix; move-down rules then fall
-out of the same optimisation instead of being inherited as folklore.
+do not thrash (there is a real cost to switching, too: lost table familiarity, and
+you cannot always get the seat back).
 
-Two outputs that framing gets and this one cannot:
+Kelly supplies the rule for free: recompute `f* = μ/σ²` against the current
+bankroll each session and round to the nearest achievable mix. Move-down rules then
+fall *out of* the same optimisation instead of being inherited as folklore.
 
-- it **prices a partial shot**, currently an unpriceable "feel" decision;
-- it makes the EV drag of variance **measurable rather than assumed** — every path
-  that breaches a threshold pays the move-down cost automatically.
+Two things that framing gets which the static version cannot:
+
+- **The EV drag of variance becomes measurable rather than assumed.** The claim
+  that drawdowns short of ruin still hurt — because they force you down to a
+  lower-EV configuration and you compound at the worse rate until you climb back —
+  is a hand-wave until a simulation enforces the move-down rule and *pays* that
+  cost in every path that breaches the threshold.
+- **The asymmetry can be priced.** Moving down is forced; moving up is optional.
+  Behaviourally people do the opposite of what the maths wants — up early, down
+  late. A sim that reports what a disciplined policy earns against a plausibly
+  undisciplined one prices that gap, which is probably more useful than the
+  optimum itself.
 
 ## Reading
 

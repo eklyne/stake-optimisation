@@ -27,7 +27,7 @@ matplotlib.use("Agg")  # no display on this box; also keeps runs headless
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import FuncFormatter, PercentFormatter  # noqa: E402
 
-from . import estimation, kelly, ruin  # noqa: E402
+from . import estimation, kelly, mix, ruin  # noqa: E402
 from .analysis import StakeReport  # noqa: E402
 from .config import Config  # noqa: E402
 
@@ -448,14 +448,88 @@ def ev_vs_risk(reports: list[StakeReport], config: Config, path: Path) -> Path:
     return _finish(fig, path)
 
 
+# --------------------------------------------------------------------------- #
+# 6. The efficient frontier over table allocations
+# --------------------------------------------------------------------------- #
+def allocation_frontier(config: Config, path: Path) -> Path:
+    """Every way to split the tables, plotted as EUR/hour against risk.
+
+    The cloud is every allocation; the line through its upper-left edge is the
+    efficient frontier - the mixes nothing else beats on both axes. The best
+    point inside tolerance is the answer, and the frontier's shape shows what
+    each further step of risk actually buys.
+    """
+    fig, ax = plt.subplots(figsize=(9.5, 6))
+
+    allocations = mix.all_allocations(config)
+    edge = mix.frontier(allocations)
+    best = mix.best_allocation(allocations)
+
+    ax.scatter(
+        [max(a.risk_of_ruin, RUIN_FLOOR) for a in allocations],
+        [a.eur_per_hour for a in allocations],
+        s=14, color=INK_MUTED, alpha=0.28, linewidths=0, label="Every possible mix",
+    )
+    ax.plot(
+        [max(a.risk_of_ruin, RUIN_FLOOR) for a in edge],
+        [a.eur_per_hour for a in edge],
+        color=SERIES[0], linewidth=2.0, marker="o", markersize=5,
+        markeredgecolor=SURFACE, markeredgewidth=1, label="Efficient frontier",
+    )
+
+    ax.axvline(config.ruin_tolerance, color=INK_MUTED, linewidth=1.4, linestyle="--")
+    ax.annotate(
+        f"tolerance {config.ruin_tolerance:.1%}",
+        xy=(config.ruin_tolerance, 0.02),
+        xycoords=("data", "axes fraction"),
+        xytext=(-6, 0), textcoords="offset points", ha="right",
+        color=INK_MUTED, fontsize=9,
+    )
+
+    if best is not None:
+        ax.plot(
+            [max(best.risk_of_ruin, RUIN_FLOOR)], [best.eur_per_hour],
+            marker="o", markersize=13, color=STATUS_GOOD,
+            markeredgecolor=SURFACE, markeredgewidth=2, linestyle="none",
+            label="Best inside tolerance",
+        )
+        ax.annotate(
+            f"{best.label}\n{best.eur_per_hour:,.0f} EUR/hr",
+            xy=(max(best.risk_of_ruin, RUIN_FLOOR), best.eur_per_hour),
+            xytext=(-14, 6), textcoords="offset points", ha="right",
+            color=INK, fontsize=9.5, fontweight="semibold",
+        )
+
+    ax.set_xscale("log")
+    ax.set_xlim(RUIN_FLOOR / 3.0, 3.0)
+    ax.margins(y=0.15)
+    ax.set_xlabel("Risk of ruin (log scale)")
+    ax.set_ylabel("EUR / hour")
+    ax.grid(alpha=0.9)
+    ax.set_axisbelow(True)
+    ax.set_title(f"Every way to split {config.tables} tables across your stakes")
+    _subtitle(
+        ax,
+        "Take the highest point left of the dashed line. The frontier is the menu; "
+        "everything below it is dominated.",
+    )
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)
+    return _finish(fig, path)
+
+
 def write_all(reports: list[StakeReport], config: Config, directory: Path) -> list[Path]:
-    """Render all five charts into `directory`, returning the paths written."""
+    """Render all six charts into `directory`, returning the paths written."""
     _style()
     directory.mkdir(parents=True, exist_ok=True)
-    return [
+    paths = [
         ruin_vs_bankroll(reports, config, directory / "01_ruin_vs_bankroll.png"),
         kelly_tradeoff(config, directory / "02_kelly_tradeoff.png"),
         required_buyins(reports, config, directory / "03_required_buyins.png"),
         winrate_funnel(reports, directory / "04_winrate_funnel.png"),
         ev_vs_risk(reports, config, directory / "05_ev_vs_risk.png"),
     ]
+    try:
+        paths.append(allocation_frontier(config, directory / "06_allocation_frontier.png"))
+    except mix.AllocationLimit:
+        pass  # too many allocations to enumerate; the other five still stand
+    return paths
