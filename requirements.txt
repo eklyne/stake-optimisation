@@ -1,0 +1,4 @@
+# Only the charts and the test runner need anything installed - the maths and the
+# text commands are pure standard library on Python 3.11+.
+matplotlib
+pytest

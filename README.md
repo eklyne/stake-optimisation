@@ -28,10 +28,8 @@ wrong answer, and nothing downstream will flag it.
 
 ## Running it
 
-Needs Python 3.11+ (for `tomllib`) and, for the charts only, matplotlib.
-
-Edit `config.toml`, then run it — there is no build step, the config is read fresh
-every time.
+Edit `config.toml`, then run it. There is no build step and nothing to rebuild —
+the config is read fresh on every run.
 
 ```
 run.bat                     THE ANSWER: best split of tables across stakes
@@ -43,14 +41,34 @@ run.bat mix --charts        also write PNGs to output/
 run.bat mix --bankroll 12000    sweep an input without editing the file
 ```
 
-`run.bat` finds an interpreter for you (this repo's `.venv` if it exists, else the
-`nemesis-mvp` one next door, else `py`). Equivalent, if you'd rather be explicit:
+`run.bat` is a batch file — run it directly (`.\run.bat` in PowerShell), not
+through Python. It finds an interpreter itself: this repo's `.venv`, else a
+`nemesis-mvp` venv next door, else `py`.
+
+### If you want `python` to work
+
+On a stock Windows box `python` is a Microsoft Store stub that installs nothing
+and helps less; only `py` resolves to a real interpreter. Activating this repo's
+venv fixes that for the shell you're in:
 
 ```
+.\.venv\Scripts\Activate.ps1     # now `python` means this repo's interpreter
 python run.py mix
 python -m shotopt mix
-python -m unittest discover -s tests -t .    # the test suite
+pytest                           # the test suite
 ```
+
+### First-time setup, if `.venv` is missing
+
+It is gitignored, so a fresh clone needs it once:
+
+```
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Only the charts and the test runner need those. The maths and every text command
+are pure standard library on Python 3.11+ (3.11 for `tomllib`).
 
 `--bankroll`, `--tables`, `--ruin-tolerance` and `--kelly-fraction` work before or
 after the subcommand. `mix` is the default when no subcommand is given.
