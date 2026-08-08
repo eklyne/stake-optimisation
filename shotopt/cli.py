@@ -343,8 +343,19 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+DEFAULT_ARGV = ["mix", "--charts"]
+"""What a bare `run.bat` does: the full job, text and charts.
+
+Running the tool with no arguments should refresh everything, not silently skip
+the charts and leave stale PNGs on disk. Any explicit subcommand opts out again -
+`run.bat mix` prints without rendering.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = _build_parser().parse_args(argv or DEFAULT_ARGV)
     get = lambda name: getattr(args, name, None)  # noqa: E731 - SUPPRESS leaves gaps
 
     try:

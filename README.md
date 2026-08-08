@@ -32,14 +32,19 @@ Edit `config.toml`, then run it. There is no build step and nothing to rebuild �
 the config is read fresh on every run.
 
 ```
-run.bat                     THE ANSWER: best split of tables across stakes
+run.bat                     EVERYTHING: best mix, printed + all six charts refreshed
+run.bat mix                 the same answer, text only
 run.bat report              per-stake table, if all volume went to one stake
 run.bat stake 200NL         one stake in detail
 run.bat kelly               the fractional-Kelly trade-off
-run.bat mix --charts        also write PNGs to output/
 
 run.bat mix --bankroll 12000    sweep an input without editing the file
+run.bat report --charts         any command can render
 ```
+
+**Bare `run.bat` is the whole job** — it runs the mix and rewrites `output\`, so
+the charts can never be stale relative to the config. Naming a subcommand opts out
+of rendering.
 
 `run.bat` is a batch file — run it directly (`.\run.bat` in PowerShell), not
 through Python. It finds an interpreter itself: this repo's `.venv`, else a

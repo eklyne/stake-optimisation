@@ -6,7 +6,7 @@
 
 # --- the four inputs ------------------------------------------------------- #
 
-bankroll_eur = 10000            # 1. bankroll, in euros
+bankroll_eur = 30000            # 1. bankroll, in euros
 tables = 12                    # 2. tables played simultaneously
 ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
 
