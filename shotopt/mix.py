@@ -374,17 +374,25 @@ def step_up_options(config: Config, best: Allocation | None = None) -> list[Step
 
     Not "the cheapest allocation containing stake X" - that answers a question
     nobody asks, and tended to return a mix bearing no resemblance to the one
-    you are actually playing. These are the two moves a player really makes:
+    you are actually playing.
 
-    1. **Top up** - one table of the HIGHEST stake in the mix moves up a rung,
-       reaching for a stake not currently played. The classic shot.
-    2. **Bottom up** - one table of the LOWEST stake in the mix moves up a rung,
-       thickening the middle instead of extending the top.
+    BOTH moves take the same shot: one table on the SHOT STAKE, the rung just
+    above the highest one currently played. That is the whole subject of this
+    section, so a move that does not seat a table there is not an option here.
+    What differs is which table is sacrificed to pay for it:
 
-    One table and one rung in both cases: these are single steps, not
-    wholesale reallocations, so the table count is unchanged and each is
-    reachable tomorrow from what is being played today. Returns whichever of the
-    two exist and differ.
+    1. **Top up** - the table comes off the HIGHEST stake in the mix. The
+       classic shot: the top of the mix stretches up a rung.
+    2. **Bottom up** - the table comes off the LOWEST stake in the mix, leaving
+       the top of the mix where it is and thinning the bottom instead.
+
+    Bottom up deliberately does NOT mean "the lowest stake moves up one rung".
+    That move seats no table on the shot stake, so it is not a shot at all and
+    has no place on this slide.
+
+    One table in both cases: single steps, not wholesale reallocations, so the
+    table count is unchanged and each is reachable tomorrow from what is being
+    played today. Returns whichever of the two exist and differ.
     """
     allocations = all_allocations(config)
     if best is None:
@@ -416,28 +424,23 @@ def step_up_options(config: Config, best: Allocation | None = None) -> list[Step
             )
         )
 
-    def move_one(source: int, prefix: str) -> tuple[int, ...] | None:
-        target = source + 1
-        if target >= len(stakes):
-            return None
-        if caps_for(target) < best.counts[target] + 1:
-            return None
+    # The one destination both moves share: the rung above the top of the mix.
+    shot = highest + 1
+    if shot >= len(stakes):
+        return []  # already at the top of the ladder - there is no shot to take
+    if caps_for(shot) < best.counts[shot] + 1:
+        return []  # the shot stake cannot seat another table, so neither move exists
+
+    def move_one(source: int, prefix: str) -> None:
         counts = list(best.counts)
         counts[source] -= 1
-        counts[target] += 1
-        add(
-            f"{prefix}: 1x {stakes[source].name} -> 1x {stakes[target].name}",
-            counts,
-        )
-        return tuple(counts)
+        counts[shot] += 1
+        add(f"{prefix}: 1x {stakes[source].name} -> 1x {stakes[shot].name}", counts)
 
-    top = move_one(highest, "Top up")
+    move_one(highest, "Top up")
+    # Same source rung means the same move; only list it once.
     if lowest != highest:
-        bottom = move_one(lowest, "Bottom up")
-        # Identical moves when the mix spans exactly two adjacent rungs and the
-        # top one has nowhere to go - no point listing the same thing twice.
-        if bottom is not None and bottom == top:
-            options.pop()
+        move_one(lowest, "Bottom up")
 
     return options
 

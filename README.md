@@ -1,4 +1,4 @@
-# shot-take-optimisation
+# stake-optimisation
 
 **What distribution of stakes should my tables be at?**
 
@@ -55,7 +55,7 @@ Everything lands in `output\`:
 | `stake_screen.csv` | one row per stake, including the ruled-out ones and why |
 | `frontier.csv` | one row per undominated mix, with a table-count column per stake |
 | `frontier.png` | the chart |
-| `shot_take_optimisation.pptx` | the six-slide deck |
+| `stake_optimisation.pptx` | the deck |
 
 **Bare `run.bat` is the whole job**, so nothing in `output\` can be stale against
 the config. The CSVs are written on every `mix` run (they're free); the chart and

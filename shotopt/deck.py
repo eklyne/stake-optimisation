@@ -1,16 +1,24 @@
 """The deck, in three sections.
 
+It opens with a run-parameters slide - when the simulations were produced and
+every input they were produced from - so a deck found on disk months later can
+still be read against the assumptions behind it.
+
 **1. Optimal stake distribution** - which stakes are worth playing and in what
 proportion: the stake screen, the bb and euro waterfalls, the frontier, the
 optimum with its nearest alternatives, and a simulation of it.
 
-**2. Shot-taking** - the two moves up from the optimum (reach at the top,
-consolidate at the bottom) and what each costs in risk.
+**2. Shot-taking** - the two ways to seat a table on the rung above the optimal
+mix (paying for it from the top of the mix, or from the bottom) and what each
+costs in risk.
 
 **3. Current configuration** - the mix actually played, reconstructed from hands
-per stake, priced against the optimum and simulated the same way.
+per stake and simulated the same way as the optimum. It has no table slide of
+its own: it is the first row of EVERY table in the deck, highlighted orange
+against the optimum's green, so each table answers 'what does this change,
+against what I do today' without the reader carrying a number between slides.
 
-Then a methodology appendix.
+Then two appendices: why a mix can earn more and risk less, and the method.
 
 Each section's simulation sits in the section whose mix it simulates, so the
 optimum and the real allocation are never compared across a section break.
@@ -21,12 +29,14 @@ slide cannot disagree with the terminal. Nothing is hardcoded.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from pptx.enum.shapes import MSO_SHAPE_TYPE  # noqa: E402
 from pptx.util import Inches, Pt  # noqa: E402
 
 from . import charts, estimation, mix, pptx_common as pc, progress, rates, sim  # noqa: E402
@@ -38,6 +48,10 @@ __all__ = ["build"]
 COL_POSITIVE = "#1baf7a"
 COL_NEGATIVE = "#d03b3b"
 COL_TOTAL = "#2a78d6"
+COL_OPENING = "#b6b5b1"
+"""The opening bar. Grey rather than the closing bar's blue: it is the starting
+position, not a result, and colouring both ends alike invited them to be read as
+the same kind of quantity. Blue is now reserved for the number you keep."""
 COL_INK = "#0b0b0b"
 COL_MUTED = "#7a7972"
 
@@ -62,6 +76,176 @@ def drawdown_note(config: Config) -> str:
         f"winning bankroll keeps making new highs to fall from. Change the timescale and "
         f"these change with it."
     )
+
+
+def _fit_columns(columns):
+    """Scale a column spec down if it would run off the right-hand edge.
+
+    A table wider than the content area is centred by the callers, which puts
+    half the overflow off each side and silently truncates BOTH ends - the
+    failure is invisible in code review and obvious only on the rendered slide.
+    Scaling proportionally keeps the relative widths the spec asked for and
+    guarantees the table fits, whatever gets added to it later.
+    """
+    limit = pc.CONTENT_WIDTH / Inches(1)
+    total = sum(width for _, width in columns)
+    if total <= limit:
+        return columns
+    factor = limit / total
+    return [(label, width * factor) for label, width in columns]
+
+
+def timescale_label(config: Config) -> str:
+    """The simulation horizon as a short header word - '1M', '200k'."""
+    hands = config.timescale_hands
+    if hands >= 1_000_000 and hands % 1_000_000 == 0:
+        return f"{hands // 1_000_000}M"
+    if hands >= 1_000 and hands % 1_000 == 0:
+        return f"{hands // 1_000}k"
+    return f"{hands:,}"
+
+
+CURRENT_LABEL = "CURRENT (July)"
+"""What the played mix is called wherever it appears. One constant, because it
+now appears on four tables and a caption that disagreed with the others would
+read as a different mix."""
+
+
+def _benchmark_row(current):
+    """The played mix, as the first row of an allocation table.
+
+    Every table opens with it so each one answers the same question - what does
+    this change, against what is actually being done today - without the reader
+    holding a number in their head from an earlier slide."""
+    return (current, "what you play now", pc.COL_ORANGE, True)
+
+
+def horizon_ev(config: Config, allocation) -> float:
+    """Expected profit over the deck's horizon, in euros.
+
+    Linear in hands - nothing compounds, since the mix is static - so this is
+    exactly the EUR/hr column on a different clock. It earns its place because
+    a year's money is the figure people actually weigh; an hourly rate is not.
+    """
+    return allocation.mean_eur_per_100 * config.timescale_hands / 100.0
+
+
+# --------------------------------------------------------------------------- #
+# Cover - when this was run, and on what
+# --------------------------------------------------------------------------- #
+def _run_parameters_slide(prs, layouts, config: Config):
+    """Every input the deck was produced from, on one slide.
+
+    Read off the live Config, which is the object the simulations actually ran
+    on - so a CLI override like `--bankroll 20000` shows the value that was
+    used, not the value sitting in config.toml. A deck whose parameters slide
+    could disagree with its own numbers would be worse than no slide."""
+    slide = prs.slides.add_slide(layouts["Title and Content"])
+    pc.add_title(slide, "How this deck was produced")
+
+    built = datetime.now().astimezone()
+    stamp = slide.shapes.add_textbox(
+        pc.CONTENT_LEFT, pc.CONTENT_TOP - Inches(0.05), pc.CONTENT_WIDTH, Inches(0.35)
+    )
+    run = stamp.text_frame.paragraphs[0].add_run()
+    run.text = f"Simulations run {built:%A %d %B %Y at %H:%M %Z}"
+    run.font.size = Pt(13)
+    run.font.bold = True
+    run.font.color.rgb = pc.BLACK
+
+    total_hands_per_hour = config.tables * config.hands_per_hour_per_table
+    timescale_hours = config.timescale_hands / total_hands_per_hour
+    settings = [
+        ("Bankroll", f"EUR {config.bankroll_eur:,.0f}"),
+        ("Tables played at once", f"{config.tables}"),
+        ("Risk-of-ruin tolerance", f"{config.ruin_tolerance:.2%}"),
+        ("Rakeback", f"{config.rakeback_pct:.0%} of rake paid"),
+        ("Hands/hour/table", f"{config.hands_per_hour_per_table:,.0f}"
+                             f"  ({total_hands_per_hour:,.0f} total)"),
+        ("Simulation timescale", f"{config.timescale_hands:,} hands"
+                                 f"  (~{timescale_hours:,.0f} hrs)"),
+        ("Lifetimes simulated", f"{config.sim_paths:,}"),
+        ("Kelly fraction", f"{config.kelly_fraction:g}  (report/stake only)"),
+        ("Win-rate haircut per table", f"{config.winrate_haircut_bb_per_table:.2f} bb/100"),
+        ("Table correlation", f"{config.table_correlation:.2f}"),
+    ]
+
+    top = pc.CONTENT_TOP + Inches(0.42)
+    left_cols = [("Setting", 3.00), ("Value", 2.20)]
+    left_width = Inches(sum(w for _, w in left_cols))
+    shape = slide.shapes.add_table(
+        len(settings) + 1, len(left_cols), pc.CONTENT_LEFT, top,
+        left_width, Inches(0.34 + 0.30 * len(settings)),
+    )
+    table = shape.table
+    for index, (_, width) in enumerate(left_cols):
+        table.columns[index].width = Inches(width)
+    for index, (label, _) in enumerate(left_cols):
+        cell = table.cell(0, index)
+        pc._zero_cell_margins(cell)
+        pc.set_cell(cell, label, font_size=9, bold=True,
+                    bg_colour=pc.TABLE_HEADER_BG, font_colour=pc.WHITE)
+    for row, (label, value) in enumerate(settings, start=1):
+        for index, text in enumerate((label, value)):
+            cell = table.cell(row, index)
+            pc._zero_cell_margins(cell)
+            pc.set_cell(cell, text, font_size=9, bold=(index == 0), font_colour=pc.BLACK)
+
+    # ---- the per-stake inputs, every column config.toml can carry ---------- #
+    stake_cols = [
+        ("Stake", 0.75),
+        ("bb\nEUR", 0.70),
+        ("Win rate\nbb/100", 0.95),
+        ("SD\nbb/100", 0.80),
+        ("Rake\nbb/100", 0.85),
+        ("Sample\nhands", 1.00),
+        ("Hands\nplayed", 1.00),
+        ("Max\ntables", 0.85),
+    ]
+    stake_width = Inches(sum(w for _, w in stake_cols))
+    stake_left = int(pc.CONTENT_LEFT + pc.CONTENT_WIDTH - stake_width)
+    shape = slide.shapes.add_table(
+        len(config.stakes) + 1, len(stake_cols), stake_left, top,
+        stake_width, Inches(0.40 + 0.30 * len(config.stakes)),
+    )
+    table = shape.table
+    for index, (_, width) in enumerate(stake_cols):
+        table.columns[index].width = Inches(width)
+    for index, (label, _) in enumerate(stake_cols):
+        cell = table.cell(0, index)
+        pc._zero_cell_margins(cell)
+        pc.set_cell(cell, label, font_size=9, bold=True,
+                    bg_colour=pc.TABLE_HEADER_BG, font_colour=pc.WHITE, wrap=True)
+
+    for row, stake in enumerate(config.stakes, start=1):
+        # An omitted optional key is shown as what it MEANS, not as a blank: a
+        # missing max_tables is "no limit", and a missing sample is "-" because
+        # the win rate is then a guess with no interval behind it.
+        values = [
+            stake.name,
+            f"{stake.bb_eur:.2f}",
+            f"{stake.winrate_bb100:.2f}",
+            f"{stake.stdev_bb100:.1f}",
+            f"{stake.rake_bb100:.3f}" if stake.rake_bb100 is not None else "-",
+            f"{stake.hands:,}" if stake.hands else "-",
+            f"{stake.current_hands:,.0f}" if stake.current_hands is not None else "-",
+            f"{stake.max_tables}" if stake.max_tables is not None else "no limit",
+        ]
+        for index, value in enumerate(values):
+            cell = table.cell(row, index)
+            pc._zero_cell_margins(cell)
+            pc.set_cell(cell, value, font_size=9, bold=(index == 0), font_colour=pc.BLACK)
+
+    _footnote(
+        slide,
+        "These are the values the run actually used, including any command-line override, "
+        "so they cannot disagree with the numbers on the slides that follow. 'Sample hands' "
+        "is the volume the win rate is measured over and only drives the confidence interval. "
+        "'Hands played' is the recent split used to reconstruct the current configuration, and "
+        "is read as a ratio only. Standard deviation is an assumption at every stake, not a "
+        "measurement.",
+    )
+    return slide
 
 
 # --------------------------------------------------------------------------- #
@@ -145,6 +329,41 @@ def _stake_table_slide(prs, layouts, config: Config, screens: list[mix.StakeScre
     return slide
 
 
+def _winrate_ci_slide(prs, layouts, config: Config, screens):
+    """The edge and how well it is known, in both units, side by side."""
+    slide = pc.add_image_slide(
+        prs, layouts, "How well do you actually know each win rate?",
+        charts.winrate_ci_figure(screens, config),
+    )
+    # add_image_slide centres the picture in the content area, which on a chart
+    # this tall runs it into the footnote. Pin it to the top instead.
+    picture = next(s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE)
+    picture.top = pc.CONTENT_TOP
+
+    assumed = [s.stake for s in screens if s.stake.measured_winrate_bb100 is not None]
+    gap = ""
+    if assumed:
+        worst = max(
+            assumed,
+            key=lambda s: estimation.winrate_stderr(s.stdev_bb100, s.hands) if s.hands else 0.0,
+        )
+        half = estimation.Z_95 * estimation.winrate_stderr(worst.stdev_bb100, worst.hands)
+        gap = (
+            f" At {', '.join(s.name for s in assumed)} the model uses an ASSUMED rate, drawn as "
+            f"the bar, while the diamond is what the sample says - {worst.name} measures "
+            f"{worst.measured_winrate_bb100:.2f} bb/100 over {worst.hands:,} hands, "
+            f"+/-{half:.1f} at 95%. The interval belongs to the diamond, never to the bar."
+        )
+    _footnote(
+        slide,
+        "Win rates are ALL-IN ADJUSTED - the luck is stripped from the spots where the money "
+        "went in before the cards ran out, so the estimate converges faster than won-at-"
+        "showdown. Rakeback carries no interval: it is a rebate on volume, known in advance."
+        + gap,
+    )
+    return slide
+
+
 # --------------------------------------------------------------------------- #
 # Slides 2 and 3 - the waterfalls
 # --------------------------------------------------------------------------- #
@@ -185,7 +404,7 @@ def _waterfall_figure(screens, config: Config, in_euros: bool):
     for ax, (name, before, rake, rakeback, banked) in zip(axes[0], series):
         after_rake = before + rake
         steps = [
-            ("Before\nrake", 0.0, before, COL_TOTAL),
+            ("Before\nrake", 0.0, before, COL_OPENING),
             ("Rake", after_rake, -rake, COL_NEGATIVE),
             ("Rakeback", after_rake, rakeback, COL_POSITIVE),
             ("Banked", 0.0, banked, COL_TOTAL),
@@ -241,7 +460,7 @@ def _waterfall_slide(prs, layouts, config: Config, screens, in_euros: bool):
 # --------------------------------------------------------------------------- #
 # Slide 5 - the chosen configuration and its neighbours
 # --------------------------------------------------------------------------- #
-def _configurations_slide(prs, layouts, config: Config, allocations, edge, best):
+def _configurations_slide(prs, layouts, config: Config, allocations, edge, best, current):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "The chosen mix, and its nearest alternatives")
 
@@ -256,7 +475,7 @@ def _configurations_slide(prs, layouts, config: Config, allocations, edge, best)
         window = edge[low:index + 3]
         chosen = best.counts
 
-    rows_data = []
+    rows_data = [] if current is None else [_benchmark_row(current)]
     for allocation in window:
         is_best = chosen is not None and allocation.counts == chosen
         if is_best:
@@ -286,16 +505,17 @@ def _allocation_table(slide, config: Config, rows_data, top):
     can be read against each other without the eye re-learning a layout.
     `rows_data` is a list of (allocation, note, background, bold).
     """
-    columns = [
-        ("Configuration", 3.30),
-        ("EUR/hr", 1.05),
-        ("Banked\nEUR/100", 1.20),
-        ("SD\nEUR/100", 1.15),
-        ("Risk of\nruin", 1.05),
-        ("Median worst\ndownswing", 1.35),
-        ("1% worst\ndownswing", 1.30),
-        ("", 2.20),
-    ]
+    columns = _fit_columns([
+        ("Configuration", 2.90),
+        ("EUR/hr", 0.85),
+        (f"{timescale_label(config)} hands\nEV", 1.10),
+        ("Banked\nEUR/100", 1.05),
+        ("SD\nEUR/100", 1.00),
+        ("Risk of\nruin", 0.95),
+        ("Median worst\ndownswing", 1.25),
+        ("1% worst\ndownswing", 1.20),
+        ("", 1.95),
+    ])
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
     shape = slide.shapes.add_table(
@@ -316,6 +536,7 @@ def _allocation_table(slide, config: Config, rows_data, top):
         values = [
             allocation.label,
             f"{allocation.eur_per_hour:,.0f}",
+            f"{horizon_ev(config, allocation):,.0f}",
             f"{allocation.mean_eur_per_100:,.2f}",
             f"{allocation.stdev_eur_per_100:,.0f}",
             f"{allocation.risk_of_ruin:.2%}",
@@ -330,7 +551,7 @@ def _allocation_table(slide, config: Config, rows_data, top):
     return table
 
 
-def _single_stake_slide(prs, layouts, config: Config, screens, best):
+def _single_stake_slide(prs, layouts, config: Config, screens, best, current):
     """Every stake played on its own, in the same format as the mix table.
 
     The baseline the whole exercise argues against: put all twelve tables on one
@@ -340,7 +561,7 @@ def _single_stake_slide(prs, layouts, config: Config, screens, best):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "If you played one stake and nothing else")
 
-    rows_data = []
+    rows_data = [] if current is None else [_benchmark_row(current)]
     for index, screen in enumerate(screens):
         counts = tuple(config.tables if i == index else 0 for i in range(len(config.stakes)))
         allocation = mix.evaluate(counts, config)
@@ -371,24 +592,32 @@ def _single_stake_slide(prs, layouts, config: Config, screens, best):
 # --------------------------------------------------------------------------- #
 # The price of stepping up
 # --------------------------------------------------------------------------- #
-def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data, top):
-    """Shared table: a highlighted baseline mix, then variants with deltas."""
-    columns = [
-        ("", 3.30),
-        ("Configuration", 3.20),
-        ("EUR/hr", 1.05),
-        ("vs base", 1.05),
-        ("Risk of ruin", 1.15),
-        ("vs base", 0.95),
-        ("Median worst\ndownswing", 1.30),
-        ("1% worst\ndownswing", 1.25),
+def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data, top,
+                      current=None):
+    """Shared table: the played mix, the highlighted baseline, then variants.
+
+    Deltas are always measured against the BASELINE (the optimum), including on
+    the played-mix row - one reference point per table. The played mix is a
+    benchmark to read against, not a second origin.
+    """
+    columns = _fit_columns([
+        ("", 2.10),
+        ("Configuration", 2.55),
+        ("EUR/hr", 0.75),
+        ("vs optimal", 0.75),
+        (f"{timescale_label(config)} hands\nEV", 1.05),
+        ("Risk of\nruin", 0.85),
+        ("vs optimal", 0.75),
+        ("Median worst\ndownswing", 1.15),
+        ("1% worst\ndownswing", 1.10),
         ("", 1.25),
-    ]
+    ])
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
+    lead = 2 if current is not None else 1  # header, plus the benchmark row
     shape = slide.shapes.add_table(
-        len(rows_data) + 2, len(columns), left, top,
-        table_width, Inches(0.45 + 0.40 * (len(rows_data) + 1)),
+        len(rows_data) + lead + 1, len(columns), left, top,
+        table_width, Inches(0.45 + 0.40 * (len(rows_data) + lead)),
     )
     table = shape.table
     for i, (_, width) in enumerate(columns):
@@ -403,19 +632,36 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
         value = sim.expected_drawdown(config, allocation, config.timescale_hands)
         return [f"{value['median']:,.0f}", f"{value['p99']:,.0f}"]
 
+    if current is not None:
+        current_row = [
+            CURRENT_LABEL, current.label, f"{current.eur_per_hour:,.0f}",
+            f"{current.eur_per_hour - baseline.eur_per_hour:+,.0f}",
+            f"{horizon_ev(config, current):,.0f}",
+            f"{current.risk_of_ruin:.2%}",
+            f"{current.risk_of_ruin / max(baseline.risk_of_ruin, 1e-12):.1f}x",
+            *swings(current), "what you play now",
+        ]
+        for i, value in enumerate(current_row):
+            cell = table.cell(1, i)
+            pc._zero_cell_margins(cell)
+            pc.set_cell(cell, value, font_size=10, bold=True,
+                        bg_colour=pc.COL_ORANGE, wrap=True)
+
     base_row = [
         baseline_note, baseline.label, f"{baseline.eur_per_hour:,.0f}", "-",
+        f"{horizon_ev(config, baseline):,.0f}",
         f"{baseline.risk_of_ruin:.2%}", "-", *swings(baseline), "",
     ]
     for i, value in enumerate(base_row):
-        cell = table.cell(1, i)
+        cell = table.cell(lead, i)
         pc._zero_cell_margins(cell)
         pc.set_cell(cell, value, font_size=10, bold=True, bg_colour=pc.COL_GREEN, wrap=True)
 
-    for row, (label, allocation, note, inside) in enumerate(rows_data, start=2):
+    for row, (label, allocation, note, inside) in enumerate(rows_data, start=lead + 1):
         values = [
             label, allocation.label, f"{allocation.eur_per_hour:,.0f}",
             f"{allocation.eur_per_hour - baseline.eur_per_hour:+,.0f}",
+            f"{horizon_ev(config, allocation):,.0f}",
             f"{allocation.risk_of_ruin:.2%}",
             f"{allocation.risk_of_ruin / max(baseline.risk_of_ruin, 1e-12):.1f}x",
             *swings(allocation), note,
@@ -426,12 +672,16 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
             pc.set_cell(
                 cell, value, font_size=10, wrap=True,
                 bg_colour=None if inside else pc.TABLE_LABEL_BG,
-                font_colour=pc.COL_TEXT_RED if (not inside and i == 8) else None,
+                # The note column, wherever it has ended up - an index literal
+                # here is what breaks silently when a column is inserted.
+                font_colour=(
+                    pc.COL_TEXT_RED if (not inside and i == len(values) - 1) else None
+                ),
             )
     return table
 
 
-def _step_up_slide(prs, layouts, config: Config, best, options):
+def _step_up_slide(prs, layouts, config: Config, best, options, current):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "The two ways up, and what each costs")
 
@@ -454,12 +704,17 @@ def _step_up_slide(prs, layouts, config: Config, best, options):
         for option in options
     ]
     _comparison_table(slide, config, best, "OPTIMAL (baseline)", rows,
-                      pc.CONTENT_TOP + Inches(0.55))
+                      pc.CONTENT_TOP + Inches(0.55), current=current)
+    used = [i for i, count in enumerate(best.counts) if count]
+    shot = config.stakes[max(used) + 1].name
+    highest, lowest = config.stakes[max(used)].name, config.stakes[min(used)].name
     _footnote(
         slide,
-        "Two moves that keep the table count fixed and start from where you already are: "
-        "reach at the top (one table of the highest stake goes up a rung) or consolidate at "
-        "the bottom (one table of the lowest stake goes up one). " + drawdown_note(config),
+        f"Both moves take the SAME shot - one table on {shot}, the rung above the top of the "
+        f"optimal mix - and both keep the table count fixed. They differ only in which table "
+        f"pays for it: TOP UP gives up a {highest} table, stretching the top of the mix up a "
+        f"rung; BOTTOM UP gives up a {lowest} table, leaving the top where it is and thinning "
+        f"the bottom instead. " + drawdown_note(config),
     )
     return slide
 
@@ -486,27 +741,29 @@ def bankroll_ladder(config: Config):
     return rows
 
 
-def _bankroll_ladder_slide(prs, layouts, config: Config, best):
+def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "What to play as the bankroll grows")
 
-    columns = [
-        ("Bankroll", 1.00),
-        ("", 1.20),
-        ("Optimal mix", 3.30),
-        ("EUR/hr", 0.95),
-        ("vs now", 0.95),
-        ("Risk of\nruin", 1.00),
-        ("Median worst\ndownswing", 1.30),
-        ("1% worst\ndownswing", 1.25),
-        ("", 1.40),
-    ]
+    columns = _fit_columns([
+        ("Bankroll", 0.85),
+        ("", 1.15),
+        ("Optimal mix", 2.85),
+        ("EUR/hr", 0.80),
+        ("vs now", 0.80),
+        (f"{timescale_label(config)} hands\nEV", 1.10),
+        ("Risk of\nruin", 0.90),
+        ("Median worst\ndownswing", 1.20),
+        ("1% worst\ndownswing", 1.15),
+        ("", 1.35),
+    ])
     rows = bankroll_ladder(config)
+    lead = 2 if current is not None else 1  # header, plus the benchmark row
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
     shape = slide.shapes.add_table(
-        len(rows) + 1, len(columns), left, pc.CONTENT_TOP + Inches(0.55),
-        table_width, Inches(0.45 + 0.40 * len(rows)),
+        len(rows) + lead, len(columns), left, pc.CONTENT_TOP + Inches(0.55),
+        table_width, Inches(0.45 + 0.40 * (len(rows) + lead - 1)),
     )
     table = shape.table
     for i, (_, width) in enumerate(columns):
@@ -517,12 +774,31 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best):
         pc.set_cell(cell, label, font_size=10, bold=True,
                     bg_colour=pc.TABLE_HEADER_BG, font_colour=pc.WHITE, wrap=True)
 
+    if current is not None:
+        # Priced at TODAY's bankroll, because that is the roll it is being
+        # played on - the rows below re-solve at bigger rolls, this one does not.
+        swing = sim.expected_drawdown(config, current, config.timescale_hands)
+        values = [
+            "playing", f"EUR {config.bankroll_eur:,.0f}", current.label,
+            f"{current.eur_per_hour:,.0f}",
+            f"{current.eur_per_hour - best.eur_per_hour:+,.0f}" if best else "-",
+            f"{horizon_ev(config, current):,.0f}",
+            f"{current.risk_of_ruin:.2%}",
+            f"{swing['median']:,.0f}", f"{swing['p99']:,.0f}",
+            "what you play now",
+        ]
+        for i, value in enumerate(values):
+            cell = table.cell(1, i)
+            pc._zero_cell_margins(cell)
+            pc.set_cell(cell, value, font_size=10, bold=True,
+                        bg_colour=pc.COL_ORANGE, wrap=True)
+
     previous_top = None
-    for row, (label, bankroll, scenario, allocation) in enumerate(rows, start=1):
+    for row, (label, bankroll, scenario, allocation) in enumerate(rows, start=lead):
         is_now = label == "now"
         if allocation is None:
             values = [label, f"EUR {bankroll:,.0f}", "nothing clears tolerance",
-                      "-", "-", "-", "-", "-", ""]
+                      "-", "-", "-", "-", "-", "-", ""]
         else:
             top = max(i for i, c in enumerate(allocation.counts) if c)
             note = "where you should be now" if is_now else (
@@ -537,6 +813,9 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best):
                 allocation.label,
                 f"{allocation.eur_per_hour:,.0f}",
                 f"{allocation.eur_per_hour - best.eur_per_hour:+,.0f}" if best else "-",
+                # Priced on the ROW's own scenario, so the EV of a bigger roll
+                # is the EV of the mix it can actually afford.
+                f"{horizon_ev(scenario, allocation):,.0f}",
                 f"{allocation.risk_of_ruin:.2%}",
                 f"{swing['median']:,.0f}",
                 f"{swing['p99']:,.0f}",
@@ -559,44 +838,16 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best):
     return slide
 
 
-def _current_slide(prs, layouts, config: Config, best, current):
-    slide = prs.slides.add_slide(layouts["Title and Content"])
-    pc.add_title(slide, "What you are actually playing")
-
-    dominated = (
-        current.eur_per_hour < best.eur_per_hour and current.risk_of_ruin > best.risk_of_ruin
-    )
-    note = "worse on BOTH axes" if dominated else "the mix in play"
-    rows = [(
-        "CURRENT (July)", current, note,
-        current.within_tolerance and not dominated,
-    )]
-    _comparison_table(slide, config, best, "OPTIMAL (baseline)", rows,
-                      pc.CONTENT_TOP + Inches(0.55))
-
-    _footnote(
-        slide,
-        "Reconstructed from hands actually played per stake in July, apportioned to whole "
-        f"tables by largest remainder. "
-        + (
-            "This configuration is DOMINATED: the optimal mix earns more AND carries less "
-            "risk of ruin, so moving to it is not a trade-off - there is no side on which "
-            "the current split is better."
-            if dominated
-            else "Compare against the optimum above."
-        ),
-    )
-    return slide
-
-
 # --------------------------------------------------------------------------- #
 # Slide 7 - the simulation
 # --------------------------------------------------------------------------- #
-def _simulation_slide(prs, layouts, config: Config, result, title):
+def _simulation_slide(prs, layouts, config: Config, result, title, scales=(None, None)):
     import numpy as np
 
+    ylim, drawdown_xmax = scales
     slide = pc.add_image_slide(
-        prs, layouts, title, charts.simulation_figure(result, config)
+        prs, layouts, title,
+        charts.simulation_figure(result, config, ylim=ylim, drawdown_xmax=drawdown_xmax),
     )
     median_dd = float(np.percentile(result.max_drawdown, 50))
     p90_dd = float(np.percentile(result.max_drawdown, 90))
@@ -616,6 +867,169 @@ def _simulation_slide(prs, layouts, config: Config, result, title):
         f"one lifetime in ten worse than EUR {p90_dd:,.0f}, median finish EUR "
         f"{median_end:,.0f}." + over_roll,
     )
+    return slide
+
+
+def _random_paths_slide(prs, layouts, config: Config, result, title, best, current,
+                        scales=(None, None)):
+    """The fan chart's companion: twenty individual lifetimes, not bands.
+
+    Both EV lines appear on BOTH copies of this slide, so the comparison is the
+    same one either way round - the question is always 'where does this mix end
+    up against the other one', and having the reference line move between slides
+    would make the two impossible to read together."""
+    import numpy as np
+
+    ev_lines = []
+    if best is not None:
+        ev_lines.append(("Optimal", best, charts.STATUS_GOOD))
+    if current is not None and (best is None or current.counts != best.counts):
+        ev_lines.append(("Current", current, charts.STATUS_CRITICAL))
+
+    slide = pc.add_image_slide(
+        prs, layouts, title,
+        charts.random_paths_figure(result, config, ev_lines, ylim=scales[0]),
+    )
+
+    hands = result.hands
+    spread = (
+        f"EUR {float(np.percentile(result.final_bankroll, 5)):,.0f} to EUR "
+        f"{float(np.percentile(result.final_bankroll, 95)):,.0f}"
+    )
+    ev_note = "  ".join(
+        f"{label} EV finishes at EUR "
+        f"{config.bankroll_eur + allocation.mean_eur_per_100 * hands / 100:,.0f}."
+        for label, allocation, _ in ev_lines
+    )
+    _footnote(
+        slide,
+        f"{result.allocation.label}. Twenty of the {result.paths:,} simulated lifetimes, "
+        f"drawn at random rather than picked by where they finish, so the spread is the one "
+        f"the simulation produced. Ninety per cent of lifetimes finish between {spread}, which "
+        f"is the width the EV lines do not show. {ev_note} The EV lines are straight because "
+        f"expectation is linear in hands - nothing here compounds, since the mix is static and "
+        f"the stakes never move. " + drawdown_note(config),
+    )
+    return slide
+
+
+# --------------------------------------------------------------------------- #
+# Appendix - why "more money, less risk" is not a contradiction
+# --------------------------------------------------------------------------- #
+def _dominance_slide(prs, layouts, config: Config, allocations, best, current):
+    """Why the chart has mixes that beat others on BOTH axes.
+
+    The single most-asked question about this deck, and the intuition it breaks
+    is a reasonable one: surely more money always costs more risk. Every figure
+    on the slide is recomputed from the same functions the tables use.
+    """
+    slide = prs.slides.add_slide(layouts["Title and Content"])
+    pc.add_title(slide, "Appendix: how a mix can earn MORE and risk LESS")
+
+    stakes = config.stakes
+    low, high = stakes[0], stakes[-1]
+
+    def solo(stake):
+        index = stakes.index(stake)
+        counts = tuple(config.tables if i == index else 0 for i in range(len(stakes)))
+        return mix.evaluate(counts, config)
+
+    solo_low, solo_high = solo(low), solo(high)
+    ev_multiple = solo_high.mean_eur_per_100 / solo_low.mean_eur_per_100
+    var_multiple = solo_high.variance_eur_per_100 / solo_low.variance_eur_per_100
+
+    dominated = [
+        a for a in allocations
+        if any(b.eur_per_hour > a.eur_per_hour and b.risk_of_ruin < a.risk_of_ruin
+               for b in allocations)
+    ]
+
+    sections = [
+        ("Risk of ruin is not the size of the swings", [
+            "It is the size of the swings measured against how fast you win. Money coming "
+            "in is what pulls the bankroll away from zero, so your edge is your protection.",
+            "Two players with identical swings, one winning twice as fast: the faster one is "
+            "far safer. They climb out of holes before the holes get deep.",
+        ]),
+        ("Which is why small stakes are not safe - they are slow", [
+            f"You have {config.tables} seats and that is the scarce thing. A seat at "
+            f"{low.name} adds almost no swing, but it adds almost no income either. It does "
+            "not make you safer, it dilutes your win rate across the whole operation.",
+            "A diluted win rate with unchanged swings is worse on the only ratio that "
+            "matters. Slow is what actually breaks you.",
+        ]),
+        ("Moving UP a rung, though, is never free", [
+            f"Earnings scale with the big blind; variance scales with its SQUARE. All "
+            f"{config.tables} tables on {high.name} rather than {low.name} is "
+            f"{ev_multiple:.1f}x the earnings and {var_multiple:.0f}x the variance.",
+            f"So ruin climbs the whole way up the ladder - {solo_low.risk_of_ruin:.2%} on "
+            f"{low.name} against {solo_high.risk_of_ruin:.1%} on {high.name}. Moving up always "
+            "buys risk with money. That is a real trade-off and it is what the frontier shows.",
+        ]),
+        ("So where does 'more money, less ruin' come from?", [
+            "Not from moving up. From moving seats that earn nothing onto stakes that do: the "
+            "swings grow, but the earnings grow FASTER, so the ratio improves and ruin falls.",
+            f"That is why {len(dominated):,} of the {len(allocations):,} possible mixes "
+            f"({len(dominated) / len(allocations):.0%}) are beaten by another mix on both "
+            "axes at once. They are not taking a different trade-off - they are simply wasting "
+            "risk they have already accepted.",
+        ]),
+    ]
+
+    if current is not None and best is not None:
+        beaten = [
+            a for a in allocations
+            if a.eur_per_hour > current.eur_per_hour
+            and a.risk_of_ruin < current.risk_of_ruin
+        ]
+        worst_seat = min(
+            (i for i, count in enumerate(current.counts) if count), default=None
+        )
+        detail = [
+            f"The mix in play earns {current.eur_per_hour:,.0f} EUR/hr at "
+            f"{current.risk_of_ruin:.2%} ruin. {len(beaten):,} other mixes earn MORE and risk "
+            "LESS - it is one of the wasteful ones, not a cautious one."
+            if beaten else
+            f"The mix in play earns {current.eur_per_hour:,.0f} EUR/hr at "
+            f"{current.risk_of_ruin:.2%} ruin, and nothing beats it on both axes at once.",
+        ]
+        if worst_seat is not None:
+            detail.append(
+                f"The {current.counts[worst_seat]} seats at {stakes[worst_seat].name} are the "
+                f"drag, not the top of the mix: the optimum plays "
+                f"{best.counts[-1] if best.counts[-1] else max(best.counts)} tables at its own "
+                f"top rung. Cutting the highest stake is the wrong instinct."
+            )
+        detail.append(
+            f"And the tolerance is {config.ruin_tolerance:.2%} while the mix in play runs at "
+            f"{current.risk_of_ruin:.2%} - roughly "
+            f"{config.ruin_tolerance / max(current.risk_of_ruin, 1e-12):.0f}x less risk than "
+            f"has been authorised. That unused allowance is worth "
+            f"{best.eur_per_hour - current.eur_per_hour:+,.0f} EUR/hr."
+        )
+        sections.append(("Your case, in three numbers", detail))
+
+    body = slide.shapes.add_textbox(
+        pc.CONTENT_LEFT, pc.CONTENT_TOP, pc.CONTENT_WIDTH, pc.CONTENT_HEIGHT
+    )
+    frame = body.text_frame
+    frame.word_wrap = True
+    first = True
+    for heading, points in sections:
+        para = frame.paragraphs[0] if first else frame.add_paragraph()
+        para.space_before = Pt(0 if first else 8)
+        first = False
+        run = para.add_run()
+        run.text = heading
+        run.font.size = Pt(12)
+        run.font.bold = True
+        for point in points:
+            bullet = frame.add_paragraph()
+            bullet.level = 1
+            run = bullet.add_run()
+            run.text = point
+            run.font.size = Pt(10)
+            run.font.color.rgb = pc.BLACK
     return slide
 
 
@@ -689,6 +1103,13 @@ def _methodology_slide(prs, layouts, config: Config):
             "Checked against the closed form: over a long horizon its loss-below-start "
             "distribution must reproduce the analytic exponential. A simulation that "
             "disagrees where the maths is known has a bug.",
+        ]),
+        ("Where the CURRENT row on every table comes from", [
+            "Hands actually played per stake in the period reviewed, apportioned to whole "
+            "tables by largest remainder. It is a reconstruction of how the table time was "
+            "really split, not a mix that was consciously chosen.",
+            "Only the RATIO between stakes matters, so the absolute hand counts and the exact "
+            "period they cover do not affect it.",
         ]),
         ("Not modelled", [
             "The allocation is a static snapshot at one bankroll, in the analytics AND in the "
@@ -805,7 +1226,7 @@ def _prime_simulations(config: Config, screens, edge, best, current) -> dict:
 def build(config: Config, directory: Path) -> Path:
     """Build the deck and return the path written."""
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "shot_take_optimisation.pptx"
+    path = directory / "stake_optimisation.pptx"
 
     screens = mix.screen_stakes(config)
     allocations = mix.all_allocations(config)
@@ -825,24 +1246,41 @@ def build(config: Config, directory: Path) -> Path:
     def run_sim(allocation):
         return simulations[allocation.counts]
 
+    # ONE set of axis limits for every simulation chart, computed across all of
+    # them before any is drawn. Two mixes autoscaled separately look far more
+    # alike than they are, and these slides exist to be compared by eye.
+    plotted = [a for a in (best, current) if a is not None]
+    scales = (
+        charts.simulation_scales([run_sim(a) for a in plotted], config, plotted)
+        if plotted else (None, None)
+    )
+
+    # ---- 0. What this was run on ------------------------------------------- #
+    _run_parameters_slide(prs, layouts, config)
+
     # ---- 1. Where the tables should be ------------------------------------- #
     pc.add_chapter_slide(
         prs, layouts, "1. Optimal stake distribution",
         "Which stakes are worth playing, and in what proportion",
     )
     _stake_table_slide(prs, layouts, config, screens)
+    _winrate_ci_slide(prs, layouts, config, screens)
     _waterfall_slide(prs, layouts, config, screens, in_euros=False)
     _waterfall_slide(prs, layouts, config, screens, in_euros=True)
-    _single_stake_slide(prs, layouts, config, screens, best)
+    _single_stake_slide(prs, layouts, config, screens, best, current)
     pc.add_image_slide(
         prs, layouts, "Every way to split the tables",
         charts.allocation_frontier_figure(config),
     )
-    _configurations_slide(prs, layouts, config, allocations, edge, best)
+    _configurations_slide(prs, layouts, config, allocations, edge, best, current)
     if best is not None:
         _simulation_slide(
             prs, layouts, config, run_sim(best),
-            "The optimal mix, simulated",
+            "The optimal mix, simulated", scales,
+        )
+        _random_paths_slide(
+            prs, layouts, config, run_sim(best),
+            "The optimal mix, twenty single lifetimes", best, current, scales,
         )
 
     # ---- 2. Moving up ------------------------------------------------------ #
@@ -851,7 +1289,7 @@ def build(config: Config, directory: Path) -> Path:
             prs, layouts, "2. Shot-taking",
             "What it costs to move a table up a rung",
         )
-        _step_up_slide(prs, layouts, config, best, mix.step_up_options(config, best))
+        _step_up_slide(prs, layouts, config, best, mix.step_up_options(config, best), current)
 
     # ---- 3. The same question at a bigger roll ----------------------------- #
     if best is not None:
@@ -859,20 +1297,27 @@ def build(config: Config, directory: Path) -> Path:
             prs, layouts, "3. As the bankroll grows",
             "Where the mix should go as the roll gets bigger",
         )
-        _bankroll_ladder_slide(prs, layouts, config, best)
+        _bankroll_ladder_slide(prs, layouts, config, best, current)
 
     # ---- 4. What is actually happening ------------------------------------- #
+    # No table slide here: the played mix is the first row of every table in the
+    # deck, so a slide showing it once more would be the fourth copy. What only
+    # this section can give is the two simulations of it.
     if current is not None and best is not None:
         pc.add_chapter_slide(
             prs, layouts, "4. Current configuration",
-            "How the table time was really split, and what that costs",
+            "The mix actually played, simulated the same way as the optimum",
         )
-        _current_slide(prs, layouts, config, best, current)
         _simulation_slide(
             prs, layouts, config, run_sim(current),
-            "The mix you actually played, simulated",
+            "The mix you actually played, simulated", scales,
+        )
+        _random_paths_slide(
+            prs, layouts, config, run_sim(current),
+            "The mix you actually played, twenty single lifetimes", best, current, scales,
         )
 
+    _dominance_slide(prs, layouts, config, allocations, best, current)
     _methodology_slide(prs, layouts, config)
 
     prs.save(path)

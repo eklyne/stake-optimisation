@@ -69,6 +69,10 @@ CONTENT_HEIGHT = Inches(5.805)
 WHITE           = RGBColor(0xFF, 0xFF, 0xFF)
 BLACK           = RGBColor(0x00, 0x00, 0x00)
 COL_GREEN       = RGBColor(0x74, 0xC4, 0x76)
+COL_ORANGE      = RGBColor(0xF6, 0xC0, 0x7A)
+# Green = the recommendation, orange = where you are today. Two highlights on
+# one table, so they have to be tellable apart at slide distance; both are
+# light enough to keep black body text readable on top.
 COL_RED         = RGBColor(0xFC, 0x92, 0x72)
 # Bar fills above are deliberately soft; TEXT needs a strong red to read as a
 # callout at slide distance (the soft one renders as orange on a white slide).

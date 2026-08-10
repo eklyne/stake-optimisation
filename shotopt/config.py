@@ -22,7 +22,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
 _STAKE_REQUIRED = ("name", "bb_eur", "winrate_bb100", "stdev_bb100")
 _STAKE_KNOWN = _STAKE_REQUIRED + (
-    "hands", "max_tables", "rake_bb100", "current_hands"
+    "hands", "max_tables", "rake_bb100", "current_hands", "measured_winrate_bb100"
 )
 _TOP_LEVEL_KNOWN = frozenset(
     {
@@ -65,6 +65,13 @@ class Stake:
     to. Falls sharply as stakes rise, since a currency-capped rake bites less on
     bigger bb-denominated pots, which is why rakeback is worth most at the bottom
     of the ladder."""
+    measured_winrate_bb100: float | None = None
+    """What the sample actually says, when `winrate_bb100` is an assumption.
+
+    Set this wherever the modelled win rate is NOT the measurement, so the deck
+    can show the two side by side instead of drawing a confidence interval
+    around a number no sample supports. Leave it unset where the modelled rate
+    IS the measurement - the deck then treats them as the same thing."""
     current_hands: float | None = None
     """Hands actually played at this stake in the period being reviewed.
 
@@ -184,6 +191,19 @@ def _parse_stake(raw: dict, index: int) -> Stake:
             )
         rake = float(rake)
 
+    measured = raw.get("measured_winrate_bb100")
+    if measured is not None:
+        if isinstance(measured, bool) or not isinstance(measured, (int, float)):
+            raise ConfigError(
+                f"{where}: measured_winrate_bb100 must be a number, got {measured!r}"
+            )
+        measured = float(measured)
+        if hands is None:
+            raise ConfigError(
+                f"{where}: measured_winrate_bb100 needs 'hands' - a measurement with no "
+                f"sample behind it cannot be given an interval"
+            )
+
     current = raw.get("current_hands")
     if current is not None:
         if isinstance(current, bool) or not isinstance(current, (int, float)) or current < 0:
@@ -201,6 +221,7 @@ def _parse_stake(raw: dict, index: int) -> Stake:
         max_tables=max_tables,
         rake_bb100=rake,
         current_hands=current,
+        measured_winrate_bb100=measured,
     )
 
 

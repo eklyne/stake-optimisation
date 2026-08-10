@@ -143,7 +143,7 @@ class TestStepUp(unittest.TestCase):
         for option in self.options:
             self.assertEqual(sum(option.allocation.counts), self.config.tables)
 
-    def test_top_up_moves_one_table_off_the_highest_rung(self):
+    def test_top_up_pays_for_the_shot_from_the_highest_rung(self):
         highest = max(i for i, c in enumerate(self.best.counts) if c)
         option = next(o for o in self.options if o.label.startswith("Top up"))
         self.assertEqual(option.allocation.counts[highest], self.best.counts[highest] - 1)
@@ -151,13 +151,18 @@ class TestStepUp(unittest.TestCase):
             option.allocation.counts[highest + 1], self.best.counts[highest + 1] + 1
         )
 
-    def test_bottom_up_moves_one_table_off_the_lowest_rung(self):
+    def test_bottom_up_pays_for_the_shot_from_the_lowest_rung(self):
         lowest = min(i for i, c in enumerate(self.best.counts) if c)
         option = next(o for o in self.options if o.label.startswith("Bottom up"))
         self.assertEqual(option.allocation.counts[lowest], self.best.counts[lowest] - 1)
-        self.assertEqual(
-            option.allocation.counts[lowest + 1], self.best.counts[lowest + 1] + 1
-        )
+
+    def test_both_moves_seat_a_table_on_the_same_shot_stake(self):
+        # The point of the section. A move that lands anywhere else is not a
+        # shot at the next rung and does not belong here.
+        shot = max(i for i, c in enumerate(self.best.counts) if c) + 1
+        self.assertTrue(self.options)
+        for option in self.options:
+            self.assertEqual(option.allocation.counts[shot], self.best.counts[shot] + 1)
 
     def test_every_move_shifts_exactly_one_table(self):
         for option in self.options:

@@ -11,6 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from shotopt import mix
 from shotopt.config import Config, Stake
 
@@ -75,13 +77,115 @@ class TestDeck(unittest.TestCase):
             for s in self.prs.slides
             if s.shapes.title is not None and s.shapes.title.text
         ]
-        expected = ["priced on its own", "big blinds", "euros", "one stake and nothing else",
+        expected = ["How this deck was produced",
+                    "priced on its own", "know each win rate",
+                    "big blinds", "euros", "one stake and nothing else",
                     "split the tables", "nearest alternatives", "optimal mix, simulated",
-                    "two ways up", "bankroll grows", "actually playing",
-                    "actually played, simulated", "Appendix"]
+                    "optimal mix, twenty single lifetimes",
+                    "two ways up", "bankroll grows",
+                    "actually played, simulated",
+                    "actually played, twenty single lifetimes",
+                    "earn MORE and risk LESS", "Appendix: method"]
         self.assertEqual(len(titles), len(expected))
         for want, got in zip(expected, titles):
             self.assertIn(want, got)
+
+    def test_every_simulation_chart_shares_one_bankroll_axis(self):
+        # Autoscaled separately, the optimal and current mixes are drawn at
+        # different heights and look far more alike than they are. These slides
+        # exist to be compared by eye, so the frame has to be the same on all
+        # four - and wide enough that nothing drawn on any of them clips.
+        from shotopt import charts, sim
+
+        best = mix.best_allocation(mix.all_allocations(self.config))
+        current = mix.current_allocation(self.config)
+        plotted = [a for a in (best, current) if a is not None]
+        self.assertEqual(len(plotted), 2)
+        results = [
+            sim.simulate(self.config, a, hands=self.config.timescale_hands,
+                         paths=self.config.sim_paths)
+            for a in plotted
+        ]
+        (low, high), drawdown_xmax = charts.simulation_scales(results, self.config, plotted)
+
+        self.assertLess(low, 0)  # room under the axis for the "broke" label
+        for result, allocation in zip(results, plotted):
+            self.assertLessEqual(result.checkpoint_bankroll[charts._random_rows(result)].max(),
+                                 high)
+            ev_end = (self.config.bankroll_eur
+                      + allocation.mean_eur_per_100 * result.hands / 100)
+            self.assertLessEqual(ev_end, high)
+            self.assertLessEqual(float(np.percentile(result.max_drawdown, 99.5)),
+                                 drawdown_xmax)
+
+    def test_no_table_runs_off_the_slide(self):
+        # The callers centre their tables, so an over-wide one loses half its
+        # overflow off EACH edge - invisible in the code, obvious on the slide,
+        # and exactly how the comparison table shipped 2in too wide.
+        from shotopt import pptx_common as pc
+
+        for slide in self.prs.slides:
+            for shape in slide.shapes:
+                if not shape.has_table:
+                    continue
+                title = slide.shapes.title
+                where = title.text if title is not None else "(divider)"
+                self.assertGreaterEqual(shape.left, 0, where)
+                self.assertLessEqual(
+                    shape.left + sum(c.width for c in shape.table.columns),
+                    pc.SLIDE_WIDTH,
+                    where,
+                )
+
+    def test_the_tables_price_the_horizon_in_money(self):
+        # EUR/hr is the ranking number; a year's money is the one people weigh.
+        header = f"{deck.timescale_label(self.config)} hands"
+        best = mix.best_allocation(mix.all_allocations(self.config))
+        expected = f"{deck.horizon_ev(self.config, best):,.0f}"
+
+        for fragment in ("nearest alternatives", "bankroll grows"):
+            table = next(s.table for s in self._slide(fragment).shapes if s.has_table)
+            labels = [c.text for c in table.rows[0].cells]
+            column = next(i for i, t in enumerate(labels) if header in t)
+            column_values = [table.cell(r, column).text for r in range(1, len(table.rows))]
+            self.assertIn(expected, column_values, fragment)
+
+    def test_the_step_up_table_also_opens_with_the_played_mix(self):
+        # The shared config caps its top stake, so its step-up slide is the
+        # "already at the top" text version and carries no table. Build one that
+        # can actually take a shot, so the comparison table is covered too.
+        from shotopt import pptx_common as pc
+
+        # A plausible ladder with room above the optimum - the shared config's
+        # 600NL win rate is a deliberate outlier and would just top out.
+        config = _config(stakes=(
+            Stake("50NL", 0.5, 8.18, 92.0, hands=271_592, rake_bb100=10.195,
+                  current_hands=23_082),
+            Stake("100NL", 1.0, 7.46, 92.0, hands=79_329, rake_bb100=8.329,
+                  current_hands=11_052),
+            Stake("200NL", 2.0, 4.32, 92.0, hands=38_970, rake_bb100=6.545,
+                  current_hands=13_760),
+            Stake("400NL", 4.0, 4.41, 92.0, hands=11_931, rake_bb100=4.411,
+                  current_hands=4_632),
+        ))
+        self.assertTrue(mix.step_up_options(
+            config, mix.best_allocation(mix.all_allocations(config))))
+
+        prs = Presentation(deck.build(config, Path(tempfile.mkdtemp())))
+        slide = next(s for s in prs.slides if s.shapes.title is not None
+                     and "two ways up" in s.shapes.title.text)
+        table = next(s.table for s in slide.shapes if s.has_table)
+
+        def fill(row):
+            found = table.cell(row, 0)._tc.find(
+                ".//{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr"
+            )
+            return None if found is None else found.get("val")
+
+        self.assertIn(mix.current_allocation(config).label,
+                      [c.text for c in table.rows[1].cells])
+        self.assertEqual(fill(1), str(pc.COL_ORANGE))   # played mix
+        self.assertEqual(fill(2), str(pc.COL_GREEN))    # the optimum
 
     def test_four_section_dividers(self):
         # Chapter slides use a layout with no title placeholder, so they show up
@@ -91,6 +195,34 @@ class TestDeck(unittest.TestCase):
             if s.shapes.title is None or not s.shapes.title.text
         ]
         self.assertEqual(len(untitled), 4)
+
+    def test_the_run_parameters_slide_reports_the_config_it_ran_on(self):
+        slide = self._slide("How this deck was produced")
+        settings, stakes = (s.table for s in slide.shapes if s.has_table)
+
+        values = {settings.cell(r, 0).text: settings.cell(r, 1).text
+                  for r in range(1, len(settings.rows))}
+        self.assertIn("5,000", values["Bankroll"])
+        self.assertIn(str(self.config.tables), values["Tables played at once"])
+        self.assertIn(f"{self.config.timescale_hands:,}", values["Simulation timescale"])
+        self.assertIn(f"{self.config.sim_paths:,}", values["Lifetimes simulated"])
+
+        # Every stake, including the one excluded by max_tables = 0 - the slide
+        # documents the inputs, not the ones that survived screening.
+        names = [stakes.cell(r, 0).text for r in range(1, len(stakes.rows))]
+        self.assertEqual(names, [s.name for s in self.config.stakes])
+
+    def test_the_run_parameters_slide_follows_a_cli_override(self):
+        # The value that ran, not the value in the file - a --bankroll override
+        # must move the slide or the deck can contradict its own cover.
+        config = _config(bankroll_eur=20_000.0)
+        prs = Presentation(deck.build(config, Path(tempfile.mkdtemp())))
+        slide = next(s for s in prs.slides if s.shapes.title is not None
+                     and "How this deck was produced" in s.shapes.title.text)
+        settings = next(s.table for s in slide.shapes if s.has_table)
+        values = {settings.cell(r, 0).text: settings.cell(r, 1).text
+                  for r in range(1, len(settings.rows))}
+        self.assertIn("20,000", values["Bankroll"])
 
     def test_the_stake_table_lists_every_stake_including_excluded(self):
         table = next(s.table for s in self._slide("priced on its own").shapes if s.has_table)
@@ -118,12 +250,39 @@ class TestDeck(unittest.TestCase):
         labels = [table.cell(r, 0).text for r in range(1, len(table.rows))]
         self.assertIn(best.label, labels)
 
-    def test_the_current_slide_shows_the_played_mix_against_the_optimum(self):
-        table = next(s.table for s in self._slide("actually playing").shapes if s.has_table)
-        labels = [table.cell(r, 1).text for r in range(1, len(table.rows))]
+    def test_every_table_opens_with_the_played_mix_as_its_benchmark(self):
+        # The played mix has no slide of its own any more - it is the first data
+        # row of every allocation table, so each one can be read against what is
+        # actually being done today.
+        from shotopt import pptx_common as pc
+
+        current = mix.current_allocation(self.config)
+        for fragment in ("one stake and nothing else", "nearest alternatives",
+                         "bankroll grows"):
+            table = next(s.table for s in self._slide(fragment).shapes if s.has_table)
+            row = [c.text for c in table.rows[1].cells]
+            self.assertIn(current.label, row, fragment)
+            fill = table.cell(1, 0)._tc.find(
+                ".//{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr"
+            )
+            self.assertEqual(fill.get("val"), str(pc.COL_ORANGE), fragment)
+
+    def test_the_optimum_is_highlighted_green_where_it_appears(self):
+        from shotopt import pptx_common as pc
+
         best = mix.best_allocation(mix.all_allocations(self.config))
-        self.assertIn(best.label, labels)
-        self.assertIn(mix.current_allocation(self.config).label, labels)
+        for fragment in ("nearest alternatives",):
+            table = next(s.table for s in self._slide(fragment).shapes if s.has_table)
+            green = [
+                r for r in range(1, len(table.rows))
+                if (lambda f: f is not None and f.get("val") == str(pc.COL_GREEN))(
+                    table.cell(r, 0)._tc.find(
+                        ".//{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr"
+                    )
+                )
+            ]
+            self.assertEqual(len(green), 1, fragment)
+            self.assertIn(best.label, [c.text for c in table.rows[green[0]].cells], fragment)
 
     def test_the_waterfall_reconciles_to_the_screen(self):
         # before rake - rake + rakeback must equal what the screen calls banked,

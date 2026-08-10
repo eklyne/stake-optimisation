@@ -1,12 +1,17 @@
-# shot-take-optimisation
+# stake-optimisation
 #
-# Win rates and hand counts are REAL, from stake_data.csv (402,992 hands).
-# The standard deviations are NOT measured - they are a flat 92 bb/100 assumption
-# across every stake, so treat the risk numbers as indicative.
+# Win rates, hand counts and standard deviations are REAL, from stake_data.csv
+# (406,584 hands), with the exceptions flagged at the stakes themselves.
+#
+# WIN RATES ARE ALL-IN ADJUSTED (the "All-In Adj BB/100" column), not won-at-
+# showdown. All-in EV strips the luck out of the spots where the money went in
+# and the cards had not run out, so it converges faster and is the better
+# estimate of the edge. Note it is paired below with the standard deviation of
+# ACTUAL results, which is the wider of the two - the conservative direction.
 
 # --- the four inputs ------------------------------------------------------- #
 
-bankroll_eur = 5000            # 1. bankroll, in euros
+bankroll_eur = 10000            # 1. bankroll, in euros
 tables = 12                    # 2. tables played simultaneously
 ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
 
@@ -28,7 +33,7 @@ rakeback_pct = 0.30
 # down. Only used by the `report` and `stake` commands; the mix ignores it.
 kelly_fraction = 0.5
 
-# From the data itself: 402,992 hands over 481.02 hours = 838 hands/hour in
+# From the data itself: 406,584 hands over 481.02 hours = 845 hands/hour in
 # total, which at 12 tables is ~70 each. Only scales every EUR/hour uniformly, so
 # it cannot change the ranking or the chosen mix.
 hands_per_hour_per_table = 70
@@ -62,69 +67,89 @@ table_correlation = 0.0             # 0 = tables independent; raises effective
 # tables on a stake that rarely has four good games running. `max_tables = 0`
 # excludes a stake entirely.
 
-# All win rates and hand counts below are from stake_data.csv. The 92.0 std dev
-# is the same assumed figure everywhere - it is NOT measured.
+# Win rates below are the ALL-IN ADJUSTED figures from stake_data.csv, and the
+# standard deviations are the MEASURED ones - except where flagged.
 
 [[stake]]
 name = "50NL"
 bb_eur = 0.50
-winrate_bb100 = 8.18
-stdev_bb100 = 92.0
-rake_bb100 = 10.195
+winrate_bb100 = 10.62
+stdev_bb100 = 92.72
+rake_bb100 = 10.198
 current_hands = 23082
-hands = 271592
+hands = 272369
 
 [[stake]]
 name = "100NL"
 bb_eur = 1.00
-winrate_bb100 = 7.46
-stdev_bb100 = 92.0
-rake_bb100 = 8.329
+winrate_bb100 = 5.34
+stdev_bb100 = 92.63
+rake_bb100 = 8.349
 current_hands = 11052
-hands = 79329
+hands = 79961
 
-# The two EUR2 NL rows (5-max 30,187 hands at 3.24; 6-max 8,783 at 8.04) are
-# pooled here: same blinds, same rake, same money, so the allocator has no reason
-# to treat them as separate rungs. Hand-weighted, that is 4.32 over 38,970.
+# The two EUR2 NL rows (5-max 30,975 hands at 2.10 all-in; 6-max 9,480 at 9.42)
+# are pooled here: same blinds, same rake, same money, so the allocator has no
+# reason to treat them as separate rungs. Hand-weighted that is 3.82 over 40,455,
+# with the standard deviation pooled the same way (sqrt of the hand-weighted mean
+# of the two variances).
 [[stake]]
 name = "200NL"
 bb_eur = 2.00
-winrate_bb100 = 4.32
-stdev_bb100 = 92.0
-rake_bb100 = 6.545
+winrate_bb100 = 3.82
+stdev_bb100 = 91.94
+rake_bb100 = 6.526
 current_hands = 13760
-hands = 38970
+hands = 40455
 
+# ASSUMED win rate - `measured_winrate_bb100` is what the sample actually says.
+# 1.32 over 12,387 hands carries a 95% interval of +/-14.1, so 4.0 is an
+# optimistic reading well inside it, and NOT a measurement. The deck shows both,
+# side by side, rather than drawing an interval around the assumption.
+#
+# The standard deviation IS measured - 12,387 hands is ample for a second moment
+# even though it is thin for a first.
 [[stake]]
 name = "400NL"
 bb_eur = 4.00
-winrate_bb100 = 4.41
-stdev_bb100 = 92.0
-rake_bb100 = 4.411
+winrate_bb100 = 0.0
+measured_winrate_bb100 = 1.32
+stdev_bb100 = 79.93
+rake_bb100 = 4.368
 current_hands = 4632
-hands = 11931
+hands = 12387
 
-# The next two win rates are ASSUMED, not measured. The measured figures (67.73
-# and 68.01 bb/100, off 1,043 and 127 hands) are noise - taken at face value they
-# had the optimiser recommending twelve 1KNL tables for "EUR 5,713/hour at zero
-# risk". These are deliberate, conservative placeholders continuing the downward
-# trend of the ladder, so the stakes can compete on a plausible basis instead of
-# on a small sample. They are guesses, and everything downstream of them is too.
+# The next two win rates are ASSUMED, not measured. The measured all-in figures
+# (47.73 and -3.10 bb/100, off 1,122 and 290 hands) are noise - taken at face
+# value the first had the optimiser recommending a table of 600NL for nothing.
+# These are deliberate, conservative placeholders continuing the downward trend
+# of the ladder. They are guesses, and everything downstream of them is too.
 #
-# `hands` is deliberately omitted: there is no sample supporting these numbers,
-# and quoting a confidence interval around a guess would dress it up as evidence.
+# `hands` and `measured_winrate_bb100` are both recorded so the deck can show
+# how little is behind them: the intervals are +/-50 and +/-56 bb/100.
+#
+# THE STANDARD DEVIATIONS ARE ALSO ASSUMED at these two. The measured values are
+# 85.66 over 1,122 hands and 48.58 over 290 - and 48.58 is not a low-variance
+# stake, it is a stake where no big pot happened to occur yet. Feeding it in
+# would make 1KNL look far safer than it is and pull the optimiser straight into
+# it, which is the same trap the win rates set. 92.0 is used instead: in line
+# with the three stakes that ARE well measured.
 [[stake]]
 name = "600NL"
 bb_eur = 6.00
-winrate_bb100 = 3.0
+winrate_bb100 = 0.0
+measured_winrate_bb100 = 47.73
 stdev_bb100 = 92.0
-rake_bb100 = 3.857
+rake_bb100 = 3.825
 current_hands = 600
+hands = 1122
 
 [[stake]]
 name = "1KNL"
 bb_eur = 10.00
-winrate_bb100 = 2.0
+winrate_bb100 = 0.0
+measured_winrate_bb100 = -3.10
 stdev_bb100 = 92.0
-rake_bb100 = 3.661
+rake_bb100 = 2.147
 current_hands = 10
+hands = 290
