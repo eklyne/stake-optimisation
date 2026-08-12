@@ -9,11 +9,23 @@
 # estimate of the edge. Note it is paired below with the standard deviation of
 # ACTUAL results, which is the wider of the two - the conservative direction.
 
+# --- currency -------------------------------------------------------------- #
+# The tables are EUR and the model computes in EUR throughout. This is a display
+# skin: money you TYPE below (bankroll, downswing_amount) is read in this
+# currency, and money you READ back - CLI, charts, deck, CSVs - is shown in it.
+# Stake `bb_eur` values stay EUR, because that is what is written on the table.
+#
+# `fx_eur_per_unit` is the euros in ONE unit of the currency. It is a fixed
+# constant you choose, never a live quote: a bankroll plan that moved with spot
+# would not be a plan. Set currency = "EUR" to turn the whole thing off.
+currency = "GBP"
+fx_eur_per_unit = 1.16          # 1 GBP = 1.16 EUR
+
 # --- the four inputs ------------------------------------------------------- #
 
-bankroll_eur = 10000            # 1. bankroll, in euros
+bankroll = 40000               # 1. bankroll, in the currency above
 tables = 12                    # 2. tables played simultaneously
-ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
+                               # 4. risk tolerance: the [risk] block below
 
 # Share of rake rebated, applied to each stake's `rake_bb100` below. Rakeback is
 # a rebate on volume, not a gamble: it lifts the mean and adds NO variance, so it
@@ -21,6 +33,8 @@ ruin_tolerance = 0.01          # 4. risk of ruin you are willing to run (1%)
 rakeback_pct = 0.30
 
 # 3. win rate and standard deviation per stake: the [[stake]] blocks below.
+# 4. risk tolerance: the [risk] block, which sits BELOW the plain settings -
+#    everything after a TOML table header belongs to that table.
 
 # --- defaults you would rarely touch --------------------------------------- #
 
@@ -55,6 +69,49 @@ sim_paths = 20000
 winrate_haircut_bb_per_table = 0.0  # bb/100 lost per table beyond the first
 table_correlation = 0.0             # 0 = tables independent; raises effective
                                     # variance, and therefore the roll required
+
+# --- risk tolerance -------------------------------------------------------- #
+# Two ways to say how much risk is too much. `mode` picks the one that decides
+# the answer; the other's numbers are still read, because the deck draws both
+# frontier charts either way.
+#
+#   mode = "ruin"       P(the bankroll ever reaches zero) <= ruin_tolerance.
+#                       Analytic and instant. An ALL-TIME, play-forever number:
+#                       it treats every mix that survives as equally comfortable,
+#                       so a mix that halves your roll twice a year and grinds it
+#                       back counts as safe.
+#
+#   mode = "downswing"  P(a fall of downswing_amount or worse within
+#                       downswing_hands) <= downswing_probability. What a losing
+#                       stretch actually feels like, over a horizon you can
+#                       picture. PEAK-TO-TROUGH - measured from whatever high the
+#                       roll had reached, NOT from where you started. Costs a
+#                       simulation per candidate, so `mix` takes a few seconds
+#                       and shows a progress bar.
+#
+#   mode = "both"       BOTH bars must be cleared, so the stricter one decides.
+#                       Which one that is changes on its own as the roll moves:
+#                       ruin binds when the roll is small, and falls away to
+#                       nothing as it grows, at which point the downswing rule
+#                       takes over. You never have to work out which framing is
+#                       the live one today.
+#
+# They are not two spellings of one constraint. On this bankroll a 0.01% ruin bar
+# admits a mix that runs a GBP 33,600 peak-to-trough fall - ruin asks only whether
+# you SURVIVE, and a fall that deep leaves you solvent and finished.
+#
+# The bankroll above is required in every mode: every chart needs a starting
+# point, and ruin is reported alongside whichever rule binds.
+#
+# THIS BLOCK MUST STAY BELOW every plain top-level setting. A TOML table header
+# captures everything after it, so a [risk] block moved up the file would quietly
+# swallow `kelly_fraction`, `timescale_hands` and the rest.
+[risk]
+mode = "both"
+ruin_tolerance = 0.0001        # 0.01% - one chance in 10,000 of ever busting
+downswing_amount = 10000       # X - maximum acceptable downswing
+downswing_hands = 1000000      # Y - number of hands in period (~a year)
+downswing_probability = 0.10   # p - probability of having a downswing this bad
 
 # --- stakes ---------------------------------------------------------------- #
 # `hands` is optional. Supply it and you get a confidence interval and the
@@ -112,9 +169,9 @@ hands = 40455
 [[stake]]
 name = "400NL"
 bb_eur = 4.00
-winrate_bb100 = 0.0
+winrate_bb100 = 2.5
 measured_winrate_bb100 = 1.32
-stdev_bb100 = 79.93
+stdev_bb100 = 92.0
 rake_bb100 = 4.368
 current_hands = 4632
 hands = 12387
@@ -137,7 +194,7 @@ hands = 12387
 [[stake]]
 name = "600NL"
 bb_eur = 6.00
-winrate_bb100 = 0.0
+winrate_bb100 = 2.0
 measured_winrate_bb100 = 47.73
 stdev_bb100 = 92.0
 rake_bb100 = 3.825
@@ -147,7 +204,7 @@ hands = 1122
 [[stake]]
 name = "1KNL"
 bb_eur = 10.00
-winrate_bb100 = 0.0
+winrate_bb100 = 1.5
 measured_winrate_bb100 = -3.10
 stdev_bb100 = 92.0
 rake_bb100 = 2.147

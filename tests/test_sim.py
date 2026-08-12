@@ -136,7 +136,7 @@ class TestStepUp(unittest.TestCase):
 
     def setUp(self):
         self.config = _config(stakes=LADDER)
-        self.best = mix.best_allocation(mix.all_allocations(self.config))
+        self.best = mix.best_allocation(mix.all_allocations(self.config), self.config)
         self.options = mix.step_up_options(self.config, self.best)
 
     def test_every_move_keeps_the_table_count(self):
@@ -195,7 +195,7 @@ class TestStepUp(unittest.TestCase):
             for s in LADDER
         )
         config = _config(stakes=capped)
-        best = mix.best_allocation(mix.all_allocations(config))
+        best = mix.best_allocation(mix.all_allocations(config), config)
         for option in mix.step_up_options(config, best):
             self.assertEqual(option.allocation.counts[3], 0)
 
@@ -204,7 +204,7 @@ class TestStepUp(unittest.TestCase):
             bankroll_eur=10_000_000.0,
             stakes=(Stake("100NL", 1.0, 7.46, 92.0), Stake("200NL", 2.0, 4.32, 92.0)),
         )
-        best = mix.best_allocation(mix.all_allocations(config))
+        best = mix.best_allocation(mix.all_allocations(config), config)
         self.assertEqual(best.counts[1], config.tables)
         self.assertEqual(mix.step_up_options(config, best), [])
 

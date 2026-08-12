@@ -79,8 +79,12 @@ class TestDeck(unittest.TestCase):
         ]
         expected = ["How this deck was produced",
                     "priced on its own", "know each win rate",
-                    "big blinds", "euros", "one stake and nothing else",
-                    "split the tables", "nearest alternatives", "optimal mix, simulated",
+                    # The money panel is titled in the DISPLAY currency, so the
+                    # fragment is the stem both spellings share.
+                    "big blinds", "Where the money goes, in",
+                    "one stake and nothing else",
+                    "split the tables", "priced in downswings",
+                    "nearest alternatives", "optimal mix, simulated",
                     "optimal mix, twenty single lifetimes",
                     "two ways up", "bankroll grows",
                     "actually played, simulated",
@@ -90,14 +94,18 @@ class TestDeck(unittest.TestCase):
         for want, got in zip(expected, titles):
             self.assertIn(want, got)
 
-    def test_every_simulation_chart_shares_one_bankroll_axis(self):
+    def test_every_simulation_chart_shares_one_profit_axis(self):
         # Autoscaled separately, the optimal and current mixes are drawn at
         # different heights and look far more alike than they are. These slides
         # exist to be compared by eye, so the frame has to be the same on all
         # four - and wide enough that nothing drawn on any of them clips.
+        #
+        # The axis is PROFIT FROM START, not bankroll: zero is where you began
+        # and the ruin barrier sits at minus the whole roll, which has to be on
+        # the axis or the red line marking it would be off-canvas.
         from shotopt import charts, sim
 
-        best = mix.best_allocation(mix.all_allocations(self.config))
+        best = mix.best_allocation(mix.all_allocations(self.config), self.config)
         current = mix.current_allocation(self.config)
         plotted = [a for a in (best, current) if a is not None]
         self.assertEqual(len(plotted), 2)
@@ -108,12 +116,12 @@ class TestDeck(unittest.TestCase):
         ]
         (low, high), drawdown_xmax = charts.simulation_scales(results, self.config, plotted)
 
-        self.assertLess(low, 0)  # room under the axis for the "broke" label
+        # The ruin line and its label both have to fit beneath the paths.
+        self.assertLess(low, -self.config.bankroll_eur)
         for result, allocation in zip(results, plotted):
-            self.assertLessEqual(result.checkpoint_bankroll[charts._random_rows(result)].max(),
-                                 high)
-            ev_end = (self.config.bankroll_eur
-                      + allocation.mean_eur_per_100 * result.hands / 100)
+            profit = result.checkpoint_bankroll - self.config.bankroll_eur
+            self.assertLessEqual(profit[charts._random_rows(result)].max(), high)
+            ev_end = allocation.mean_eur_per_100 * result.hands / 100
             self.assertLessEqual(ev_end, high)
             self.assertLessEqual(float(np.percentile(result.max_drawdown, 99.5)),
                                  drawdown_xmax)
@@ -140,7 +148,7 @@ class TestDeck(unittest.TestCase):
     def test_the_tables_price_the_horizon_in_money(self):
         # EUR/hr is the ranking number; a year's money is the one people weigh.
         header = f"{deck.timescale_label(self.config)} hands"
-        best = mix.best_allocation(mix.all_allocations(self.config))
+        best = mix.best_allocation(mix.all_allocations(self.config), self.config)
         expected = f"{deck.horizon_ev(self.config, best):,.0f}"
 
         for fragment in ("nearest alternatives", "bankroll grows"):
@@ -169,7 +177,7 @@ class TestDeck(unittest.TestCase):
                   current_hands=4_632),
         ))
         self.assertTrue(mix.step_up_options(
-            config, mix.best_allocation(mix.all_allocations(config))))
+            config, mix.best_allocation(mix.all_allocations(config), config)))
 
         prs = Presentation(deck.build(config, Path(tempfile.mkdtemp())))
         slide = next(s for s in prs.slides if s.shapes.title is not None
@@ -246,7 +254,7 @@ class TestDeck(unittest.TestCase):
         notes = [table.cell(r, last).text for r in range(1, len(table.rows))]
         self.assertEqual(sum("CHOSEN" in n for n in notes), 1)
 
-        best = mix.best_allocation(mix.all_allocations(self.config))
+        best = mix.best_allocation(mix.all_allocations(self.config), self.config)
         labels = [table.cell(r, 0).text for r in range(1, len(table.rows))]
         self.assertIn(best.label, labels)
 
@@ -270,7 +278,7 @@ class TestDeck(unittest.TestCase):
     def test_the_optimum_is_highlighted_green_where_it_appears(self):
         from shotopt import pptx_common as pc
 
-        best = mix.best_allocation(mix.all_allocations(self.config))
+        best = mix.best_allocation(mix.all_allocations(self.config), self.config)
         for fragment in ("nearest alternatives",):
             table = next(s.table for s in self._slide(fragment).shapes if s.has_table)
             green = [
@@ -300,7 +308,7 @@ class TestDeck(unittest.TestCase):
         # nothing to compare the current split against, so sections 2 and 3 drop
         # out rather than inventing a subject.
         config = _config(bankroll_eur=100.0, ruin_tolerance=1e-9)
-        self.assertIsNone(mix.best_allocation(mix.all_allocations(config)))
+        self.assertIsNone(mix.best_allocation(mix.all_allocations(config), config))
         prs = Presentation(deck.build(config, Path(tempfile.mkdtemp())))
         titles = [s.shapes.title.text for s in prs.slides if s.shapes.title is not None]
         self.assertFalse(any("actually playing" in t for t in titles))

@@ -156,6 +156,12 @@ Stated plainly, because the tool cannot fix them:
   P(-50%) column than at the ruin column.
 - **Ruin here assumes an infinite horizon.** "Ever" is a long time. Over a finite
   number of hands the true probability is lower, so these figures are conservative.
+  The downswing rule below is the one that names its horizon explicitly.
+- **Currency is not a modelled quantity.** The stakes are euro-denominated and the
+  maths runs in euros throughout; a display currency converts at a fixed rate on
+  the way in and out (`money.py`). FX risk on a bankroll held in one currency and
+  staked in another is real, and is *not* modelled here — the rate is a constant,
+  so none of its variance reaches the ruin or drawdown figures.
 
 ## The static mix (built)
 
@@ -186,6 +192,62 @@ Two properties make this trustworthy rather than merely plausible:
 The output is an efficient frontier of allocations, plus the marginal question that
 actually gets asked at the table: *what does one more table a level up buy me, and
 what does it cost?*
+
+### Which constraint selects off that frontier
+
+The frontier is the menu; the risk tolerance picks the dish. `tolerance.py` offers
+two rules, and they are not interchangeable framings of one number.
+
+**Ruin** — `P(ever bust) ≤ t` — is the closed form above, and it is free to
+evaluate because `risk_of_ruin` was computed when the allocation was scored. Its
+limitation follows from what it measures: an all-time probability of touching zero.
+It cannot distinguish a mix that drifts up serenely from one that halves your roll
+every year and grinds it back, because both survive.
+
+**Downswing** — `P(peak-to-trough fall ≥ X within Y hands) ≤ p` — measures the
+thing the previous section named as the *behaviourally* binding constraint. Note
+which of the two drawdown quantities it uses. Loss-below-start has a closed form
+(§ The two drawdown laws) and is exactly what ruin already prices; peak-to-trough
+does not, because over unlimited time it grows without bound — a winning bankroll
+keeps making new highs to fall from. So this rule must name a horizon, and it must
+simulate. Each candidate mix costs a Monte Carlo run.
+
+That makes the selection a **walk** rather than a filter: sort the allocations by
+the objective and take the first the rule admits, which is optimal because the sort
+key *is* the objective. Two things keep it affordable without approximating
+anything —
+
+- candidates are deduplicated on `(mean, variance)`, which is the entire input to
+  the simulation, so mixes agreeing on both share an answer by construction;
+- the rule screens at a low path count and only pays for an accurate run on
+  candidates that might survive it.
+
+On realistic inputs the downswing rule binds far harder than ruin does. A mix can
+sit at a 0.1% lifetime risk of ruin — comfortably inside any sane tolerance — while
+running a five-figure peak-to-trough fall once every few hundred thousand hands.
+
+**Or set both** (`mode = "both"`), which takes the intersection. That is worth more
+than a belt-and-braces gesture, because the two rules bind in opposite regimes: ruin
+is the live constraint at a small bankroll and vanishes as the roll grows, at which
+point the downswing bar takes over. The intersection tracks that handover with no
+intervention. On the shipped config the two are three decades apart in strictness —
+a 0.01% ruin bar admits a mix that runs a £33,600 drawdown on a £40,000 roll.
+
+### The bound that makes it tractable
+
+Searching the downswing rule naively is hopeless on a wide ladder: the highest
+earners are the highest variance, they all fail, and each rejection costs a
+simulation. The saving is an exact inequality rather than a heuristic. Along any
+single path, the deepest peak-to-trough fall is at least the deepest fall below the
+starting point — the start is merely one of the highs the path has made:
+
+    max_drawdown ≥ loss_below_start          (pathwise, hence quantile by quantile)
+
+The right-hand side is the closed form from § The two drawdown laws. So any mix
+whose *analytic* figure already exceeds the limit is guaranteed to exceed it once
+simulated, and is rejected for nothing. It is a one-sided bound — it can never
+wrongly reject, only decline to decide — which is what lets it sit in front of the
+simulation without changing any answer.
 
 ## The dynamic policy (not built)
 

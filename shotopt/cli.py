@@ -17,6 +17,7 @@ from pathlib import Path
 from . import estimation, export, mix, rates
 from .analysis import StakeReport, best_affordable, build_reports
 from .config import Config, ConfigError, load_config
+from .ruin import odds_against as _odds
 
 __all__ = ["main"]
 
@@ -24,8 +25,13 @@ _WRITTEN: list[Path] = []
 """Everything this run produced, reported in one block at the end."""
 
 
-def _eur(value: float) -> str:
-    return f"{value:,.0f}"
+def _money(config: Config, eur: float) -> str:
+    """A euro figure in the display currency, without the code.
+
+    Takes EUROS - the internal unit - so no caller can pre-convert by accident.
+    Use `config.currency.fmt` where the code itself should appear.
+    """
+    return config.currency.plain(eur)
 
 
 def _blank(value: object) -> str:
@@ -36,12 +42,22 @@ def _rule(width: int) -> str:
     return "-" * width
 
 
-def _print_header(config: Config, kelly_fraction: bool = True) -> None:
+def _print_header(
+    config: Config, kelly_fraction: bool = True, rule: str | None = None
+) -> None:
+    """`rule` names the risk test this command actually applied.
+
+    It is a parameter rather than a lookup because not every command uses the
+    configured one: `report` and `stake` price a single stake through the
+    analytic ruin formula whatever `[risk] mode` says, and a header advertising a
+    downswing rule over a table of ruin figures would be a lie. Only `mix` obeys
+    the config, and only `mix` passes the configured rule in.
+    """
     print()
     line = (
-        f"Bankroll EUR {_eur(config.bankroll_eur)}   "
+        f"Bankroll {config.currency.fmt(config.bankroll_eur)}   "
         f"{config.tables} tables   "
-        f"ruin tolerance {config.ruin_tolerance:.2%}"
+        f"{rule or f'ruin tolerance {config.ruin_tolerance:.2%}'}"
     )
     # The Kelly fraction plays no part in the mix answer, so it is not shown
     # there - it would only invite the reader to look for where it applies.
@@ -49,6 +65,10 @@ def _print_header(config: Config, kelly_fraction: bool = True) -> None:
         line += f"   Kelly k={config.kelly_fraction:g}"
     print(line)
     notes = []
+    note = config.currency.note()
+    if note:
+        notes.append(f"FX fixed at {config.currency.eur_per_unit:g} EUR = 1 "
+                     f"{config.currency.code}")
     if config.rakeback_pct:
         notes.append(f"rakeback {config.rakeback_pct:.0%}")
     if config.winrate_haircut_bb_per_table:
@@ -65,9 +85,10 @@ def cmd_report(config: Config, reports: list[StakeReport]) -> None:
     _print_header(config)
     print()
 
+    code = config.currency.code
     columns = (
         ("stake", 9, "<"),
-        ("EUR/hr", 9, ">"),
+        (f"{code}/hr", 9, ">"),
         ("buy-ins", 8, ">"),
         ("ruin", 9, ">"),
         ("", 4, "<"),
@@ -82,7 +103,7 @@ def cmd_report(config: Config, reports: list[StakeReport]) -> None:
     for report in reports:
         verdict = "OK" if report.within_tolerance else "NO"
         need = (
-            _eur(report.bankroll_for_tolerance_eur)
+            _money(config, report.bankroll_for_tolerance_eur)
             if report.bankroll_for_tolerance_eur is not None
             else "-"
         )
@@ -92,13 +113,15 @@ def cmd_report(config: Config, reports: list[StakeReport]) -> None:
             else ""
         )
         kelly_roll = (
-            _eur(report.kelly_bankroll_eur) if report.kelly_bankroll_eur is not None else "-"
+            _money(config, report.kelly_bankroll_eur)
+            if report.kelly_bankroll_eur is not None
+            else "-"
         )
         print(
             "  ".join(
                 [
                     f"{report.stake.name:<9}",
-                    f"{report.eur_per_hour:>9,.0f}",
+                    f"{_money(config, report.eur_per_hour):>9}",
                     f"{report.buyins:>8.0f}",
                     f"{report.risk_of_ruin:>9.2%}",
                     f"{verdict:<4}",
@@ -118,10 +141,10 @@ def cmd_report(config: Config, reports: list[StakeReport]) -> None:
         )
     else:
         print(
-            f"VERDICT: {best.stake.name} - the highest EUR/hour that stays inside "
+            f"VERDICT: {best.stake.name} - the highest {code}/hour that stays inside "
             f"{config.ruin_tolerance:.2%} ruin\n"
-            f"         ({best.eur_per_hour:,.0f} EUR/hr, ruin {best.risk_of_ruin:.2%}, "
-            f"P(-50%) {best.drawdown_50:.1%})."
+            f"         ({config.currency.fmt(best.eur_per_hour)}/hr, "
+            f"ruin {best.risk_of_ruin:.2%}, P(-50%) {best.drawdown_50:.1%})."
         )
         blocked = [r for r in reports if not r.within_tolerance and r.stake.bb_eur > best.stake.bb_eur]
         if blocked:
@@ -129,8 +152,9 @@ def cmd_report(config: Config, reports: list[StakeReport]) -> None:
             if nxt.bankroll_for_tolerance_eur is not None:
                 shortfall = nxt.bankroll_for_tolerance_eur - config.bankroll_eur
                 print(
-                    f"         {nxt.stake.name} needs EUR {_eur(nxt.bankroll_for_tolerance_eur)} "
-                    f"- another EUR {_eur(shortfall)}."
+                    f"         {nxt.stake.name} needs "
+                    f"{config.currency.fmt(nxt.bankroll_for_tolerance_eur)} "
+                    f"- another {config.currency.fmt(shortfall)}."
                 )
     print()
     print(
@@ -151,27 +175,38 @@ def cmd_stake(config: Config, reports: list[StakeReport], name: str) -> int:
 
     _print_header(config)
     print()
-    print(f"{stake.name}  (bb = EUR {stake.bb_eur:g}, buy-in = EUR {_eur(stake.buyin_eur)})")
+    # The blinds themselves stay in euros whatever the display currency: they are
+    # what is written on the table you sit at, not a figure being reported.
+    print(f"{stake.name}  (bb = EUR {stake.bb_eur:g}, buy-in = "
+          f"{config.currency.fmt(stake.buyin_eur)})")
     print(_rule(60))
     print(f"  win rate            {stake.winrate_bb100:>10.2f} bb/100")
     if report.winrate_eff != stake.winrate_bb100:
-        print(f"  after table haircut {report.winrate_eff:>10.2f} bb/100")
+        # `winrate_eff` is `rates.total_winrate`: haircut off AND rakeback on. It
+        # was labelled "after table haircut", which reads as a deduction and left
+        # the line looking wrong whenever rakeback made it the larger number.
+        print(f"  banked (incl. RB)   {report.winrate_eff:>10.2f} bb/100")
     print(f"  std dev             {stake.stdev_bb100:>10.2f} bb/100")
     if report.stdev_eff != stake.stdev_bb100:
         print(f"  after correlation   {report.stdev_eff:>10.2f} bb/100")
-    print(f"  hourly              {report.eur_per_hour:>10,.0f} EUR/hr")
+    print(f"  hourly              {_money(config, report.eur_per_hour):>10} "
+          f"{config.currency.code}/hr")
     print()
     print(f"  your roll           {report.buyins:>10.1f} buy-ins ({report.bankroll_bb:,.0f} bb)")
     print(f"  risk of ruin        {report.risk_of_ruin:>10.2%}   "
           f"({'inside' if report.within_tolerance else 'OUTSIDE'} tolerance)")
     print(f"  P(lose half)        {report.drawdown_50:>10.1%}")
+    code = config.currency.code
     if report.bankroll_for_tolerance_eur is not None:
-        print(f"  roll for tolerance  {report.bankroll_for_tolerance_eur:>10,.0f} EUR "
+        print(f"  roll for tolerance  "
+              f"{_money(config, report.bankroll_for_tolerance_eur):>10} {code} "
               f"({report.buyins_for_tolerance:.0f} buy-ins)")
     if report.kelly_bankroll_eur is not None:
-        print(f"  Kelly roll (k={config.kelly_fraction:g})   {report.kelly_bankroll_eur:>10,.0f} EUR "
+        print(f"  Kelly roll (k={config.kelly_fraction:g})   "
+              f"{_money(config, report.kelly_bankroll_eur):>10} {code} "
               f"({report.kelly_buyins:.0f} buy-ins)")
     if report.supported_bb_eur is not None:
+        # In euros: this is a big blind to go and look for in the lobby.
         print(f"  roll supports bb of {report.supported_bb_eur:>10.2f} EUR  "
               f"(round DOWN to a real stake)")
 
@@ -188,7 +223,8 @@ def cmd_stake(config: Config, reports: list[StakeReport], name: str) -> int:
         print(f"  95% interval        {low:>10.2f} to {high:.2f} bb/100")
         print(f"  shaded (-1 SE)      {report.shaded_winrate:>10.2f} bb/100")
         if report.shaded_kelly_bankroll_eur is not None:
-            print(f"  roll on shaded rate {report.shaded_kelly_bankroll_eur:>10,.0f} EUR "
+            print(f"  roll on shaded rate "
+                  f"{_money(config, report.shaded_kelly_bankroll_eur):>10} {code} "
                   f"- size off this, not the point estimate")
         else:
             print("  shaded rate is not positive - this sample cannot justify the stake")
@@ -207,7 +243,11 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
     they cost nothing, need no dependency, and a table you can only read in a
     terminal is a table you cannot pivot.
     """
-    _print_header(config, kelly_fraction=False)
+    from . import tolerance as _tolerance
+
+    rule = _tolerance.for_config(config)
+    code = config.currency.code
+    _print_header(config, kelly_fraction=False, rule=rule.describe(config))
 
     # ---- Step 1: price each stake alone, and drop the redundant ones -------- #
     screens = mix.screen_stakes(config)
@@ -216,7 +256,8 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
     print()
     header = (
         f"  {'stake':<9}  {'bb/100':>7}  {'+RB':>6}  {'=net':>7}  {'hands':>9}  "
-        f"{'+/- 95%':>8}  {'EUR/hr':>8}  {'EUR/100':>9}  {'sd EUR/100':>11}   verdict"
+        f"{'+/- 95%':>8}  {code + '/hr':>8}  {'on tables':>10}  "
+        f"{code + '/100':>9}  {'sd ' + code + '/100':>11}   verdict"
     )
     print(header)
     print(_rule(len(header) + 26))
@@ -234,8 +275,10 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
         net = screen.mean_eur_per_100 / stake.bb_eur
         print(
             f"  {stake.name:<9}  {stake.winrate_bb100:>7.2f}  {rakeback:>6.2f}  {net:>7.2f}  "
-            f"{hands}  {margin}  {screen.eur_per_hour:>8,.0f}  "
-            f"{screen.mean_eur_per_100:>9,.2f}  {screen.stdev_eur_per_100:>11,.0f}   {verdict}"
+            f"{hands}  {margin}  {_money(config, screen.eur_per_hour):>8}  "
+            f"{_money(config, screen.exposure_eur):>10}  "
+            f"{config.currency.plain(screen.mean_eur_per_100, 2):>9}  "
+            f"{_money(config, screen.stdev_eur_per_100):>11}   {verdict}"
         )
     kept = [s for s in screens if s.kept]
     print()
@@ -247,13 +290,23 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
         print(f"cannot enumerate allocations: {exc}", file=sys.stderr)
         return 2
 
-    best = mix.best_allocation(allocations)
+    # Any mode that consults the downswing rule walks the list simulating
+    # candidates, so it is the one slow step in an otherwise instant command.
+    search = mix.search_allocations(
+        allocations,
+        config,
+        progress_label="testing mixes" if config.risk_mode != "ruin" else None,
+    )
+    best = search.best
     edge = mix.frontier(allocations)
 
     print(f"STEP 2 - EFFICIENT FRONTIER   ({len(edge)} undominated mixes over "
           f"{len(kept)} stakes)")
     print()
-    header = f"  {'EUR/hr':>8}  {'ruin':>9}  {'P(-50%)':>8}  mix"
+    header = (
+        f"  {code + '/hr':>8}  {'on tables':>10}  {'ruin':>9}  {'odds':>12}  "
+        f"{'P(-50%)':>8}  mix"
+    )
     print(header)
     print(_rule(len(header) + 26))
     for allocation in edge:
@@ -261,19 +314,45 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
         if best is not None and allocation.counts == best.counts:
             marker = "  <- BEST INSIDE TOLERANCE"
         print(
-            f"  {allocation.eur_per_hour:>8,.0f}  {allocation.risk_of_ruin:>9.2%}  "
+            f"  {_money(config, allocation.eur_per_hour):>8}  "
+            f"{_money(config, allocation.exposure_eur):>10}  "
+            f"{allocation.risk_of_ruin:>9.2%}  "
+            f"{_odds(allocation.risk_of_ruin):>12}  "
             f"{allocation.drawdown_50:>8.1%}  {allocation.label}{marker}"
         )
     print()
-    print("  Downswing figures need a simulation and a timescale - they are in the deck,")
-    print(f"  over {config.timescale_hands:,} hands. Simulating every frontier row here")
-    print("  would turn an instant command into a slow one.")
+    if config.risk_mode != "ruin" and best is not None:
+        # The number the rule actually tested on, quoted for the winner only -
+        # every other row would need its own simulation.
+        depth = _tolerance.DownswingTolerance().measure(best, config)
+        print(f"  Chosen: {best.label} runs a {config.currency.fmt(depth)} worst fall "
+              f"at {config.downswing_probability:.0%}")
+        print(f"  over {config.downswing_hands:,} hands, against a limit of "
+              f"{config.currency.fmt(config.downswing_amount_eur)}.")
+        if config.risk_mode == "both":
+            print(f"  Both rules applied - {rule.slack(best, config)}.")
+        print(f"  ({search.pruned:,} mixes ruled out analytically, "
+              f"{search.tested:,} simulated.)")
+    else:
+        print("  Downswing figures need a simulation and a timescale - they are in the deck,")
+        print(f"  over {config.timescale_hands:,} hands. Simulating every frontier row here")
+        print("  would turn an instant command into a slow one.")
     print()
 
     if best is None:
-        cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
-        print(f"Nothing clears your tolerance. Safest available: {cheapest.label}, "
-              f"at {cheapest.risk_of_ruin:.2%}.")
+        if not search.exhausted:
+            # The search ran out of budget with candidates still unexamined. Saying
+            # "nothing clears" here would be a claim the run never established.
+            print(f"Search budget exhausted after {search.tested:,} simulated mixes "
+                  f"({search.pruned:,} pruned) with")
+            print("candidates still untested, so this is NOT a finding that nothing "
+                  "qualifies.")
+            print(f"Raise mix.MAX_TOLERANCE_TESTS (currently "
+                  f"{mix.MAX_TOLERANCE_TESTS:,}) and re-run.")
+        else:
+            cheapest = min(allocations, key=lambda a: a.risk_of_ruin)
+            print(f"Nothing clears your tolerance. Safest available: {cheapest.label}, "
+                  f"at {cheapest.risk_of_ruin:.2%} ruin.")
         print()
 
     _WRITTEN.extend(export.write_tables(screens, edge, config, best, output_dir))
@@ -290,7 +369,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config", type=Path, default=argparse.SUPPRESS, help="path to config.toml"
     )
     common.add_argument(
-        "--bankroll", type=float, default=argparse.SUPPRESS, help="override bankroll, EUR"
+        "--bankroll",
+        type=float,
+        default=argparse.SUPPRESS,
+        help="override bankroll, in the config's currency",
     )
     common.add_argument(
         "--tables", type=int, default=argparse.SUPPRESS, help="override table count"
@@ -364,8 +446,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(get("config"))
+        # `--bankroll` is typed in the same currency as the config file's own
+        # `bankroll`, so it goes through the same conversion. Without this the
+        # flag would silently mean something different from the key it overrides.
+        bankroll = get("bankroll")
         config = config.replace(
-            bankroll_eur=get("bankroll"),
+            bankroll_eur=(
+                config.currency.to_eur(bankroll) if bankroll is not None else None
+            ),
             tables=get("tables"),
             ruin_tolerance=get("ruin_tolerance"),
             kelly_fraction=get("kelly_fraction"),
@@ -397,7 +485,11 @@ def main(argv: list[str] | None = None) -> int:
     if get("deck"):
         from . import deck, pptx_common
 
-        _WRITTEN.append(deck.build(config, output_dir))
+        # The deck and its data file are a pair, built in one pass from one set
+        # of numbers so they cannot drift apart.
+        data_path = output_dir / "stake_optimisation_data.xlsx"
+        _WRITTEN.append(deck.build(config, output_dir, workbook_path=data_path))
+        _WRITTEN.append(data_path)
         plain_deck = not pptx_common.template_available()
 
     # Reported once, at the end, so the numbered steps read in order rather than

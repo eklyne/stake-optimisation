@@ -20,17 +20,100 @@ The output is two things:
 
 ## The four inputs
 
-Everything lives in [`config.toml`](config.toml), and everything comes out in euros.
+Everything lives in [`config.toml`](config.toml).
 
-1. **Bankroll**, in euros.
+1. **Bankroll**, in your display currency (see below).
 2. **Tables played simultaneously.**
 3. **Win rate and standard deviation for each stake you have data on**, in bb/100.
-4. **Risk-of-ruin tolerance** — a constraint, not a display setting. It decides
-   which stakes are in bounds at your current roll.
+4. **Risk tolerance** — a constraint, not a display setting. It decides which
+   stakes are in bounds at your current roll, and it comes in two shapes.
 
 Every number in the shipped config is a placeholder. Replace them before reading
 anything into the output — a made-up standard deviation produces a confident,
 wrong answer, and nothing downstream will flag it.
+
+### Two ways to set the risk tolerance
+
+The `[risk]` block picks one. Both sets of numbers are read either way, because
+the deck draws both frontier charts whichever rule binds.
+
+```toml
+[risk]
+mode = "both"                  # "ruin" | "downswing" | "both"
+ruin_tolerance = 0.0001        # P(ever bust) <= 0.01%
+downswing_amount = 10000       # ...and: no more than a 1% chance
+downswing_hands = 1000000      #    of a 10,000 fall
+downswing_probability = 0.01   #    within 1M hands
+```
+
+**`mode = "ruin"`** is `P(the bankroll ever reaches zero) ≤ tolerance`. Analytic,
+instant, and the classic framing. Its weakness is that it is an *all-time,
+play-forever* number that treats every mix which survives as equally comfortable
+— a mix that halves your roll twice a year and grinds it back counts as safe.
+
+**`mode = "downswing"`** is `P(a fall of X or worse within Y hands) ≤ p`. What a
+losing stretch actually feels like, over a horizon you can picture. **Peak to
+trough** — measured from whatever high the roll had reached, not from where you
+started. There is no closed form for it (given unlimited time it grows without
+bound), so each candidate costs a simulation and `mix` takes a few seconds behind
+a progress bar. It is much the stricter of the two on real inputs.
+
+**`mode = "both"`** requires a mix to clear both bars, so the stricter one
+decides — and which one that is changes on its own as the roll moves. Ruin binds
+when the bankroll is small and falls away to nothing as it grows, at which point
+the downswing rule takes over. You stop having to work out which framing is the
+live one today, and the verdict line names the leg that bound:
+
+```
+Chosen: 2x 50NL + 10x 200NL runs a GBP 9,969 worst fall at 1%
+over 1,000,000 hands, against a limit of GBP 10,000.
+Both rules applied - ruin 6.2e-16 against a 0.01% bar (11 decades of room);
+downswing GBP 9,969 against GBP 10,000 (GBP 31 of room).
+```
+
+They are not two spellings of one constraint. On a £40k bankroll a 0.01% ruin bar
+happily admits a mix running a **£33,600** peak-to-trough fall: ruin asks only
+whether you survive, and a fall that deep leaves you solvent and finished.
+
+The bankroll is required in every mode: every chart needs a starting point, and
+risk of ruin is reported alongside whichever rule binds.
+
+### Why the downswing search is affordable
+
+A naive walk down a six-thousand-mix ladder would simulate the bold end one mix at
+a time and never reach anything admissible. Two things prevent that, and the first
+is exact rather than a heuristic:
+
+- **An analytic floor.** Peak-to-trough drawdown is *pathwise* at least the fall
+  below the starting point, and that one has a closed form
+  (`ruin.loss_below_start_quantile`). So a mix whose analytic figure already breaks
+  the limit certainly breaks the simulated one, and is rejected for free. On the
+  shipped config this removes 5,295 of 6,188 mixes before any Monte Carlo runs —
+  64 are actually simulated.
+- **Deduplication on `(mean, variance)`**, which is the entire input to the
+  simulation, so mixes agreeing on both share an answer by construction.
+
+If the search ever does run out of budget (`mix.MAX_TOLERANCE_TESTS`) it says so
+explicitly rather than returning "nothing clears your tolerance" — those are
+different statements and conflating them sends you down a stake for no reason.
+
+### Currency
+
+The tables are EUR and the model computes in EUR end to end. The currency setting
+is a display skin over that: money you **type** (bankroll, `downswing_amount`) is
+read in it, and money you **read back** — terminal, charts, deck, CSVs — is shown
+in it. Stake `bb_eur` values stay in euros, because that is what is written on the
+table you sit at.
+
+```toml
+currency = "GBP"
+fx_eur_per_unit = 1.16    # euros in ONE unit of the currency
+```
+
+The rate is a fixed constant you choose, never a live quote — a bankroll plan that
+moved with spot would not be a plan, and rebuilding the deck would silently change
+every figure on it. Omit both keys (or set `currency = "EUR"`) and nothing is
+converted anywhere. bb/100 figures are never affected.
 
 ## Running it
 
@@ -54,8 +137,58 @@ Everything lands in `output\`:
 |---|---|
 | `stake_screen.csv` | one row per stake, including the ruled-out ones and why |
 | `frontier.csv` | one row per undominated mix, with a table-count column per stake |
-| `frontier.png` | the chart |
+| `frontier.png` | the frontier, priced in risk of ruin |
+| `frontier_downswing.png` | the same frontier, priced in peak-to-trough downswing |
 | `stake_optimisation.pptx` | the deck |
+| `stake_optimisation_data.xlsx` | every number on the deck, in tabs you can pivot |
+
+Money columns in the CSVs and the workbook carry the display currency in their
+header (`per_hour_gbp`), so a column can never be read in the wrong unit.
+
+### The data file
+
+The deck and its workbook are a **pair**, written in one pass from one set of
+objects — the workbook is built inside `deck.build` from the values the slides
+already hold, so it cannot disagree with the deck it ships beside, and it costs no
+extra simulation. Tabs:
+
+| tab | what |
+|---|---|
+| `INDEX` | what is on each tab |
+| `RUN` | every input the run actually used, CLI overrides included |
+| `STAKES` | config inputs and screen verdict, per stake |
+| `ALLOCATIONS` | **every** mix scored, flagged for frontier / best / current |
+| `FRONTIER` | the undominated mixes, plus loss-below-start quantiles |
+| `DOWNSWING` | median / 10% / 1% worst falls for the mixes the deck quotes |
+| `LADDER` | the optimum re-solved at each bankroll growth step |
+| `STEP_UP` | the two ways to move a table up, and what each costs |
+| `SIM_FAN` | bankroll percentile bands over the horizon, per headline mix |
+| `SIM_OUTCOMES` | where the headline mixes finish and how deep they dig |
+| `WINRATE_CI` | the win-rate slide: modelled rate, rakeback, sample interval |
+
+`ALLOCATIONS` is the one worth knowing about: the full cloud from the frontier
+chart, so *"what would 8× 200NL + 4× 400NL have done"* is a filter rather than a
+re-run.
+
+### Two columns worth explaining
+
+**`On tables`** is the money sitting in front of you at once, at a full 100bb
+buy-in per seat — `Σ tables × 100bb`. Everything else in these tables is a *rate*
+(per hour, per 100 hands) or a probability; this is the **stock** rather than the
+flow, and it is the figure to hold against your bankroll. 12× 200NL puts £2,069 on
+the table; 12× 1KNL puts £10,345, a quarter of a £40k roll, in play at once.
+
+**Risk of ruin** is also quoted as odds against (`10,000/1`). Anything rarer than
+a million to one collapses to `<1M/1` — the safe end of the ladder runs to 1e-129,
+where the literal odds are a 130-digit integer and no decision turns on the
+difference.
+
+### The simulation charts
+
+Plotted as **profit from start**, not bankroll: zero is where you began, so the
+line reads as what you made rather than as a total carrying a constant offset.
+Ruin then has a place on the axis — the red dotted barrier at minus the whole roll
+— instead of being the invisible point where a total happens to reach nil.
 
 **Bare `run.bat` is the whole job**, so nothing in `output\` can be stale against
 the config. The CSVs are written on every `mix` run (they're free); the chart and
@@ -65,12 +198,13 @@ deck need `--charts` / `--deck`, which the bare invocation passes for you.
 
 1. **Stake table** — every metric per stake, rake and rakeback broken out, exclusions marked
 2. **Waterfall, bb/100** — before rake → rake → rakeback → banked, shared y axis
-3. **Waterfall, euros** — the same decomposition in money, where it reads the opposite way
+3. **Waterfall, money** — the same decomposition in cash, where it reads the opposite way
 4. **Frontier** — every mix, the undominated edge, the chosen point
-5. **Configurations** — the optimum with two safer and two bolder frontier neighbours
-6. **Step up** — the cheapest way into each higher stake, and what it costs
-7. **Simulation** — a million hands, twenty thousand times: drawdowns and outcomes
-8. **Methodology** — what was assumed, and what that does to the numbers
+5. **Frontier, in downswings** — the same choice on the peak-to-trough axis
+6. **Configurations** — the optimum with two safer and two bolder frontier neighbours
+7. **Step up** — the cheapest way into each higher stake, and what it costs
+8. **Simulation** — a million hands, twenty thousand times: drawdowns and outcomes
+9. **Methodology** — what was assumed, and what that does to the numbers
 
 ### Two kinds of downswing
 
@@ -89,6 +223,19 @@ peak-to-trough figure is therefore "within N hands" and nothing else.
 That asymmetry is the whole reason `sim.py` exists. The frontier table's `typical`
 and `1-in-10` columns are the first kind; the deck's simulation slide is the
 second.
+
+`mode = "downswing"` prices the **second** kind — the one you feel, not the one
+that busts you. That is deliberate: losing €7k off a €15k high is what makes a
+player move down, even though it is only a €2k loss below start.
+
+One consequence worth knowing. `sim.simulate` walks in 200,000-hand chunks and
+only freezes a busted path from the *next* chunk, so over a horizon shorter than
+that there is no absorption at all and the worst peak-to-trough fall is the
+unconstrained one — a path can "fall" further than it had money to lose. That
+overstates the downswing rather than understating it, which is the same direction
+as every other assumption here, but it does mean a `downswing_hands` under 200k is
+measuring a slightly idealised path. `tests/test_currency_and_risk_mode.py` pins
+the behaviour so it is not mistaken for a bug.
 
 ### The simulation
 
@@ -277,18 +424,21 @@ plain floats precisely so the sim can import them as its oracle.
 config.toml          the four inputs
 shotopt/
   config.py          load + validate
+  money.py           the display currency: EUR in, your currency out, nothing between
+  tolerance.py       the risk rules (ruin / downswing / both), behind one interface
   mix.py             the answer: screen the stakes, enumerate and score every mix
   ruin.py            risk of ruin, drawdown, effective sigma
   kelly.py           sizing and growth (used by report/stake only)
   estimation.py      standard errors, intervals, shaded win rates
-  rates.py           bb/100 -> EUR/hour
+  rates.py           bb/100 -> money per hour
   analysis.py        the only module that knows about both config and maths
-  charts.py          the frontier chart
+  charts.py          the two frontier charts
   export.py          CSV copies of the two printed tables
+  workbook.py        the deck's numbers as an xlsx, built in the same pass
   sim.py             Monte Carlo over a fixed hand horizon
-  deck.py            the eight-slide PPTX
+  deck.py            the PPTX
   pptx_common.py     deck infrastructure, copied from nemesis-mvp (a fork, not a mirror)
   cli.py             the command line
-tests/               129 tests, no dependencies (pytest or stdlib unittest)
+tests/               201 tests, no dependencies (pytest or stdlib unittest)
 docs/theory.md       derivations and where they come from
 ```

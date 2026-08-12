@@ -55,6 +55,49 @@ the same kind of quantity. Blue is now reserved for the number you keep."""
 COL_INK = "#0b0b0b"
 COL_MUTED = "#7a7972"
 
+
+def _money(config: Config, eur: float, dp: int = 0) -> str:
+    """A euro amount, labelled in the display currency: `GBP 8,621`.
+
+    Every money string on every slide goes through here or `_plain`, so a deck
+    built in sterling has no euro figures hiding in a footnote. Takes EUROS - the
+    internal unit - so nothing can be converted twice.
+    """
+    return config.currency.fmt(eur, dp)
+
+
+def _plain(config: Config, eur: float, dp: int = 0) -> str:
+    """As `_money`, without the code - for table cells whose header carries it."""
+    return config.currency.plain(eur, dp)
+
+
+def risk_rule_note(config: Config) -> str:
+    """One sentence naming the rule that actually chose the mixes on this deck."""
+    from . import tolerance as _tolerance
+
+    described = _tolerance.for_config(config).describe(config)
+    if config.risk_mode == "both":
+        return (
+            f"THE RULE APPLIED: {described}. Two constraints, and the chosen mix had to clear "
+            f"BOTH - so whichever is stricter at this bankroll is the one that decided. They "
+            f"are not two spellings of one idea: ruin asks whether you survive, while the "
+            f"downswing bar asks how deep a PEAK-TO-TROUGH fall you sit through on the way, "
+            f"measured from whatever high the roll had reached rather than from where it "
+            f"started. A mix can be certain to survive and still be unplayable."
+        )
+    if config.risk_mode == "downswing":
+        return (
+            f"THE RULE APPLIED: {described}. That is a "
+            f"PEAK-TO-TROUGH fall - measured from whatever high the bankroll had reached, not "
+            f"from where it started - and it is the constraint the chosen mix had to satisfy. "
+            f"Risk of ruin is still reported throughout, but it did not decide anything here."
+        )
+    return (
+        f"THE RULE APPLIED: {described}. Downswing columns "
+        f"are reported for context; they did not gate the choice."
+    )
+
+
 def drawdown_note(config: Config) -> str:
     """Defined once and repeated under every table carrying the columns - a
     reader landing on one slide should not have to hunt for what they mean."""
@@ -66,15 +109,18 @@ def drawdown_note(config: Config) -> str:
         f"hands ({hours:,.0f} hours at {config.tables} tables) played at that exact mix. "
         f"(2) Within that lifetime find the single deepest PEAK-TO-TROUGH fall - how far the "
         f"bankroll dropped below whatever high it had previously reached. That is one number "
-        f"per lifetime. (3) Repeat for {paths:,} independent lifetimes. (4) MEDIAN WORST "
-        f"DOWNSWING is the middle of those {paths:,} numbers: in half of lifetimes the worst "
-        f"fall is shallower than this, in half it is deeper. 1% WORST DOWNSWING is the 99th "
-        f"percentile: one lifetime in a hundred is worse.  Note this is NOT the median of "
-        f"every downswing you have - most of those are trivial and there are thousands of "
-        f"them. It is the median of the WORST one per lifetime. The timescale is part of the "
-        f"number: given unlimited time a peak-to-trough fall grows without bound, because a "
-        f"winning bankroll keeps making new highs to fall from. Change the timescale and "
-        f"these change with it."
+        f"per lifetime. (3) Repeat for {paths:,} independent lifetimes. (4) Report three "
+        f"points on the resulting distribution: MEDIAN is the middle one, so half of "
+        f"lifetimes fall deeper than that and half do not; 10% WORST is the 90th percentile, "
+        f"one lifetime in ten; 1% WORST is the 99th, one in a hundred.  Note these are NOT "
+        f"percentiles of every downswing you have - most of those are trivial and there are "
+        f"thousands of them. Each lifetime contributes only its WORST one. The timescale is "
+        f"part of the number: given unlimited time a peak-to-trough fall grows without bound, "
+        f"because a winning bankroll keeps making new highs to fall from. Change the "
+        f"timescale and these change with it.  ON TABLES is a different kind of figure - not "
+        f"a rate or a probability but a stock: the money sitting in front of you at once, at "
+        f"a full 100bb buy-in per seat. It is what a mix has at stake today rather than "
+        f"eventually, and the number to hold against the bankroll behind it."
     )
 
 
@@ -155,10 +201,19 @@ def _run_parameters_slide(prs, layouts, config: Config):
 
     total_hands_per_hour = config.tables * config.hands_per_hour_per_table
     timescale_hours = config.timescale_hands / total_hands_per_hour
+    downswing = (
+        f"{config.downswing_probability:.0%} chance of "
+        f"{_money(config, config.downswing_amount_eur)} in "
+        f"{config.downswing_hands:,} hands"
+        if config.downswing_amount_eur is not None
+        else "not set"
+    )
     settings = [
-        ("Bankroll", f"EUR {config.bankroll_eur:,.0f}"),
+        ("Bankroll", _money(config, config.bankroll_eur)),
         ("Tables played at once", f"{config.tables}"),
+        ("Risk rule applied", f"{config.risk_mode}"),
         ("Risk-of-ruin tolerance", f"{config.ruin_tolerance:.2%}"),
+        ("Downswing tolerance", downswing),
         ("Rakeback", f"{config.rakeback_pct:.0%} of rake paid"),
         ("Hands/hour/table", f"{config.hands_per_hour_per_table:,.0f}"
                              f"  ({total_hands_per_hour:,.0f} total)"),
@@ -168,6 +223,10 @@ def _run_parameters_slide(prs, layouts, config: Config):
         ("Kelly fraction", f"{config.kelly_fraction:g}  (report/stake only)"),
         ("Win-rate haircut per table", f"{config.winrate_haircut_bb_per_table:.2f} bb/100"),
         ("Table correlation", f"{config.table_correlation:.2f}"),
+        ("Money shown in",
+         config.currency.code if config.currency.is_base
+         else f"{config.currency.code}  (fixed "
+              f"{config.currency.eur_per_unit:g} EUR = 1 {config.currency.code})"),
     ]
 
     top = pc.CONTENT_TOP + Inches(0.42)
@@ -263,10 +322,11 @@ def _stake_table_slide(prs, layouts, config: Config, screens: list[mix.StakeScre
         ("Rakeback\nbb/100", 0.95),
         ("Banked\nbb/100", 0.95),
         ("+/- 95%\nbb/100", 0.90),
-        ("Banked\nEUR/100", 0.95),
-        ("SD\nEUR/100", 0.90),
-        ("EUR/hr", 0.85),
-        ("Verdict", 3.20),
+        (f"Banked\n{config.currency.code}/100", 0.95),
+        (f"SD\n{config.currency.code}/100", 0.90),
+        (f"{config.currency.code}/hr", 0.85),
+        (f"On tables\n{config.currency.code}", 0.95),
+        ("Verdict", 2.55),
     ]
     rows = len(screens) + 1
     table_width = Inches(sum(w for _, w in columns))
@@ -305,9 +365,10 @@ def _stake_table_slide(prs, layouts, config: Config, screens: list[mix.StakeScre
             f"+{rakeback:.2f}" if rakeback else "-",
             f"{banked_bb:.2f}",
             f"+/-{margin}",
-            f"{screen.mean_eur_per_100:.2f}",
-            f"{screen.stdev_eur_per_100:.0f}",
-            f"{screen.eur_per_hour:,.0f}",
+            _plain(config, screen.mean_eur_per_100, 2),
+            _plain(config, screen.stdev_eur_per_100),
+            _plain(config, screen.eur_per_hour),
+            _plain(config, screen.exposure_eur),
             "in the mix" if screen.kept else screen.excluded_reason,
         ]
         for index, value in enumerate(values):
@@ -316,7 +377,11 @@ def _stake_table_slide(prs, layouts, config: Config, screens: list[mix.StakeScre
             pc.set_cell(
                 cell, value, font_size=9, bold=(index == 0),
                 bg_colour=pc.TABLE_LABEL_BG if excluded else None,
-                font_colour=pc.COL_TEXT_RED if (excluded and index == 10) else ink,
+                # The verdict column, wherever it has ended up - an index literal
+                # is what breaks silently when a column is inserted before it.
+                font_colour=(
+                    pc.COL_TEXT_RED if (excluded and index == len(values) - 1) else ink
+                ),
             )
 
     _footnote(
@@ -384,7 +449,9 @@ def _waterfall_figure(screens, config: Config, in_euros: bool):
         rakeback = rates.rakeback_bb100(stake.rake_bb100, config.rakeback_pct)
         before = stake.winrate_bb100 + rake
         banked = screen.mean_eur_per_100 / stake.bb_eur
-        scale = stake.bb_eur if in_euros else 1.0
+        # bb -> money per 100 hands, with the display conversion folded in, so
+        # the panel is drawn in the same units its axis label claims.
+        scale = config.currency.from_eur(stake.bb_eur) if in_euros else 1.0
         series.append(
             (stake.name, before * scale, -rake * scale, rakeback * scale, banked * scale)
         )
@@ -399,7 +466,7 @@ def _waterfall_figure(screens, config: Config, in_euros: bool):
     fig, axes = plt.subplots(
         1, len(series), figsize=(3.05 * len(series), 4.6), sharey=True, squeeze=False
     )
-    unit = "EUR / 100 hands" if in_euros else "bb / 100 hands"
+    unit = config.currency.axis("/ 100 hands") if in_euros else "bb / 100 hands"
 
     for ax, (name, before, rake, rakeback, banked) in zip(axes[0], series):
         after_rake = before + rake
@@ -440,15 +507,20 @@ def _waterfall_figure(screens, config: Config, in_euros: bool):
 
 
 def _waterfall_slide(prs, layouts, config: Config, screens, in_euros: bool):
+    # "in_euros" is the historical name for "in money rather than big blinds" -
+    # the panel follows the display currency like everything else.
+    money = config.currency.code
     title = (
-        "Where the money goes, in euros" if in_euros else "Where the money goes, in big blinds"
+        f"Where the money goes, in {money}" if in_euros
+        else "Where the money goes, in big blinds"
     )
     slide = pc.add_image_slide(prs, layouts, title, _waterfall_figure(screens, config, in_euros))
     _footnote(
         slide,
         "Shared y axis across stakes - that comparison is the point. "
         + (
-            "In euros every bar grows with the stake, which is the entire case for moving up."
+            f"In {money} every bar grows with the stake, which is the entire case for "
+            "moving up."
             if in_euros
             else "In big blinds the rake bar shrinks as stakes rise, but the win rate shrinks "
             "faster: cheaper rake does not, on this data, pay for the tougher games."
@@ -479,21 +551,31 @@ def _configurations_slide(prs, layouts, config: Config, allocations, edge, best,
     for allocation in window:
         is_best = chosen is not None and allocation.counts == chosen
         if is_best:
-            note, bg = "CHOSEN - highest EUR/hr inside tolerance", pc.COL_GREEN
+            note, bg = (
+                f"CHOSEN - highest {config.currency.code}/hr inside tolerance", pc.COL_GREEN
+            )
         elif allocation.risk_of_ruin < (best.risk_of_ruin if best else 0):
             note, bg = "safer, earns less", None
         else:
-            note, bg = "over your tolerance", pc.TABLE_LABEL_BG
+            # Only says "over your tolerance" when RUIN alone is what was tested,
+            # since that is the column the reader can check against this row. Where
+            # the downswing rule is in play a bolder row may be outside it for a
+            # reason no column here shows, so the note stays descriptive.
+            note, bg = (
+                ("over your tolerance", pc.TABLE_LABEL_BG)
+                if config.risk_mode == "ruin"
+                else ("bolder than the chosen mix", pc.TABLE_LABEL_BG)
+            )
         rows_data.append((allocation, note, bg, is_best))
 
     _allocation_table(slide, config, rows_data, pc.CONTENT_TOP + Inches(0.55))
     _footnote(
         slide,
-        f"Tolerance {config.ruin_tolerance:.2%} on a EUR {config.bankroll_eur:,.0f} bankroll "
+        f"{risk_rule_note(config)} On a {_money(config, config.bankroll_eur)} bankroll "
         f"across {config.tables} tables. Risk of ruin assumes this mix is played at a fixed "
         "size forever, so it is an upper bound - in practice you would move down. "
-        "SD is the euro standard deviation per 100 hands: the risk being bought. "
-        + drawdown_note(config),
+        f"SD is the {config.currency.code} standard deviation per 100 hands: the risk being "
+        "bought. " + drawdown_note(config),
     )
     return slide
 
@@ -505,16 +587,21 @@ def _allocation_table(slide, config: Config, rows_data, top):
     can be read against each other without the eye re-learning a layout.
     `rows_data` is a list of (allocation, note, background, bold).
     """
+    code = config.currency.code
     columns = _fit_columns([
-        ("Configuration", 2.90),
-        ("EUR/hr", 0.85),
-        (f"{timescale_label(config)} hands\nEV", 1.10),
-        ("Banked\nEUR/100", 1.05),
-        ("SD\nEUR/100", 1.00),
-        ("Risk of\nruin", 0.95),
-        ("Median worst\ndownswing", 1.25),
-        ("1% worst\ndownswing", 1.20),
-        ("", 1.95),
+        ("Configuration", 2.55),
+        (f"{code}/hr", 0.80),
+        (f"On tables\n{code}", 0.95),
+        (f"{timescale_label(config)} hands\nEV", 1.00),
+        (f"Banked\n{code}/100", 0.95),
+        (f"SD\n{code}/100", 0.90),
+        ("Risk of\nruin", 0.85),
+        # Three points on one distribution, so they share a stem and differ only
+        # in the percentile - which is the comparison the reader wants to make.
+        ("Downswing\nmedian", 1.00),
+        ("Downswing\n10% worst", 1.00),
+        ("Downswing\n1% worst", 1.00),
+        ("", 1.70),
     ])
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
@@ -535,13 +622,15 @@ def _allocation_table(slide, config: Config, rows_data, top):
         swing = sim.expected_drawdown(config, allocation, config.timescale_hands)
         values = [
             allocation.label,
-            f"{allocation.eur_per_hour:,.0f}",
-            f"{horizon_ev(config, allocation):,.0f}",
-            f"{allocation.mean_eur_per_100:,.2f}",
-            f"{allocation.stdev_eur_per_100:,.0f}",
+            _plain(config, allocation.eur_per_hour),
+            _plain(config, allocation.exposure_eur),
+            _plain(config, horizon_ev(config, allocation)),
+            _plain(config, allocation.mean_eur_per_100, 2),
+            _plain(config, allocation.stdev_eur_per_100),
             f"{allocation.risk_of_ruin:.2%}",
-            f"{swing['median']:,.0f}",
-            f"{swing['p99']:,.0f}",
+            _plain(config, swing["median"]),
+            _plain(config, swing["p90"]),
+            _plain(config, swing["p99"]),
             note,
         ]
         for i, value in enumerate(values):
@@ -567,15 +656,15 @@ def _single_stake_slide(prs, layouts, config: Config, screens, best, current):
         allocation = mix.evaluate(counts, config)
         if not screen.kept:
             note, bg = f"excluded - {screen.excluded_reason}", pc.TABLE_LABEL_BG
-        elif allocation.within_tolerance:
-            note, bg = "inside tolerance", None
+        elif allocation.within_ruin_tolerance:
+            note, bg = "inside ruin tolerance", None
         else:
-            note, bg = "over your tolerance", pc.TABLE_LABEL_BG
+            note, bg = "over ruin tolerance", pc.TABLE_LABEL_BG
         rows_data.append((allocation, note, bg, False))
 
     _allocation_table(slide, config, rows_data, pc.CONTENT_TOP + Inches(0.45))
     best_line = (
-        f" The best mix does {best.eur_per_hour:,.0f} EUR/hr at "
+        f" The best mix does {_money(config, best.eur_per_hour)}/hr at "
         f"{best.risk_of_ruin:.2%} - compare that against every row here."
         if best is not None else ""
     )
@@ -600,17 +689,20 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
     the played-mix row - one reference point per table. The played mix is a
     benchmark to read against, not a second origin.
     """
+    code = config.currency.code
     columns = _fit_columns([
-        ("", 2.10),
-        ("Configuration", 2.55),
-        ("EUR/hr", 0.75),
+        ("", 1.80),
+        ("Configuration", 2.30),
+        (f"{code}/hr", 0.75),
         ("vs optimal", 0.75),
-        (f"{timescale_label(config)} hands\nEV", 1.05),
+        (f"On tables\n{code}", 0.90),
+        (f"{timescale_label(config)} hands\nEV", 1.00),
         ("Risk of\nruin", 0.85),
         ("vs optimal", 0.75),
-        ("Median worst\ndownswing", 1.15),
-        ("1% worst\ndownswing", 1.10),
-        ("", 1.25),
+        ("Downswing\nmedian", 0.95),
+        ("Downswing\n10% worst", 0.95),
+        ("Downswing\n1% worst", 0.95),
+        ("", 1.05),
     ])
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
@@ -630,13 +722,23 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
 
     def swings(allocation):
         value = sim.expected_drawdown(config, allocation, config.timescale_hands)
-        return [f"{value['median']:,.0f}", f"{value['p99']:,.0f}"]
+        return [
+            _plain(config, value["median"]),
+            _plain(config, value["p90"]),
+            _plain(config, value["p99"]),
+        ]
+
+    def delta(allocation):
+        """A signed difference against the baseline, in display money."""
+        gap = config.currency.from_eur(allocation.eur_per_hour - baseline.eur_per_hour)
+        return f"{gap:+,.0f}"
 
     if current is not None:
         current_row = [
-            CURRENT_LABEL, current.label, f"{current.eur_per_hour:,.0f}",
-            f"{current.eur_per_hour - baseline.eur_per_hour:+,.0f}",
-            f"{horizon_ev(config, current):,.0f}",
+            CURRENT_LABEL, current.label, _plain(config, current.eur_per_hour),
+            delta(current),
+            _plain(config, current.exposure_eur),
+            _plain(config, horizon_ev(config, current)),
             f"{current.risk_of_ruin:.2%}",
             f"{current.risk_of_ruin / max(baseline.risk_of_ruin, 1e-12):.1f}x",
             *swings(current), "what you play now",
@@ -648,8 +750,9 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
                         bg_colour=pc.COL_ORANGE, wrap=True)
 
     base_row = [
-        baseline_note, baseline.label, f"{baseline.eur_per_hour:,.0f}", "-",
-        f"{horizon_ev(config, baseline):,.0f}",
+        baseline_note, baseline.label, _plain(config, baseline.eur_per_hour), "-",
+        _plain(config, baseline.exposure_eur),
+        _plain(config, horizon_ev(config, baseline)),
         f"{baseline.risk_of_ruin:.2%}", "-", *swings(baseline), "",
     ]
     for i, value in enumerate(base_row):
@@ -659,9 +762,10 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
 
     for row, (label, allocation, note, inside) in enumerate(rows_data, start=lead + 1):
         values = [
-            label, allocation.label, f"{allocation.eur_per_hour:,.0f}",
-            f"{allocation.eur_per_hour - baseline.eur_per_hour:+,.0f}",
-            f"{horizon_ev(config, allocation):,.0f}",
+            label, allocation.label, _plain(config, allocation.eur_per_hour),
+            delta(allocation),
+            _plain(config, allocation.exposure_eur),
+            _plain(config, horizon_ev(config, allocation)),
             f"{allocation.risk_of_ruin:.2%}",
             f"{allocation.risk_of_ruin / max(baseline.risk_of_ruin, 1e-12):.1f}x",
             *swings(allocation), note,
@@ -736,7 +840,10 @@ def bankroll_ladder(config: Config):
     for step in BANKROLL_STEPS:
         bankroll = config.bankroll_eur * (1 + step)
         scenario = config.replace(bankroll_eur=bankroll)
-        allocation = mix.best_allocation(mix.all_allocations(scenario))
+        # Re-solved under the LIVE risk rule. In downswing mode each step is its
+        # own walk, and the drawdown cache is keyed on bankroll (correctly - the
+        # absorbing barrier moves with it), so the steps do not share simulations.
+        allocation = mix.best_allocation(mix.all_allocations(scenario), scenario)
         rows.append((f"+{step:.0%}" if step else "now", bankroll, scenario, allocation))
     return rows
 
@@ -745,17 +852,20 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "What to play as the bankroll grows")
 
+    code = config.currency.code
     columns = _fit_columns([
-        ("Bankroll", 0.85),
-        ("", 1.15),
-        ("Optimal mix", 2.85),
-        ("EUR/hr", 0.80),
-        ("vs now", 0.80),
-        (f"{timescale_label(config)} hands\nEV", 1.10),
-        ("Risk of\nruin", 0.90),
-        ("Median worst\ndownswing", 1.20),
-        ("1% worst\ndownswing", 1.15),
-        ("", 1.35),
+        ("Bankroll", 0.80),
+        ("", 1.05),
+        ("Optimal mix", 2.45),
+        (f"{code}/hr", 0.75),
+        ("vs now", 0.75),
+        (f"On tables\n{code}", 0.90),
+        (f"{timescale_label(config)} hands\nEV", 1.00),
+        ("Risk of\nruin", 0.85),
+        ("Downswing\nmedian", 0.95),
+        ("Downswing\n10% worst", 0.95),
+        ("Downswing\n1% worst", 0.95),
+        ("", 1.05),
     ])
     rows = bankroll_ladder(config)
     lead = 2 if current is not None else 1  # header, plus the benchmark row
@@ -779,12 +889,15 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
         # played on - the rows below re-solve at bigger rolls, this one does not.
         swing = sim.expected_drawdown(config, current, config.timescale_hands)
         values = [
-            "playing", f"EUR {config.bankroll_eur:,.0f}", current.label,
-            f"{current.eur_per_hour:,.0f}",
-            f"{current.eur_per_hour - best.eur_per_hour:+,.0f}" if best else "-",
-            f"{horizon_ev(config, current):,.0f}",
+            "playing", _money(config, config.bankroll_eur), current.label,
+            _plain(config, current.eur_per_hour),
+            f"{config.currency.from_eur(current.eur_per_hour - best.eur_per_hour):+,.0f}"
+            if best else "-",
+            _plain(config, current.exposure_eur),
+            _plain(config, horizon_ev(config, current)),
             f"{current.risk_of_ruin:.2%}",
-            f"{swing['median']:,.0f}", f"{swing['p99']:,.0f}",
+            _plain(config, swing["median"]), _plain(config, swing["p90"]),
+            _plain(config, swing["p99"]),
             "what you play now",
         ]
         for i, value in enumerate(values):
@@ -797,8 +910,8 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
     for row, (label, bankroll, scenario, allocation) in enumerate(rows, start=lead):
         is_now = label == "now"
         if allocation is None:
-            values = [label, f"EUR {bankroll:,.0f}", "nothing clears tolerance",
-                      "-", "-", "-", "-", "-", "-", ""]
+            values = [label, _money(config, bankroll), "nothing clears tolerance",
+                      "-", "-", "-", "-", "-", "-", "-", "-", ""]
         else:
             top = max(i for i, c in enumerate(allocation.counts) if c)
             note = "where you should be now" if is_now else (
@@ -809,16 +922,19 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
             swing = sim.expected_drawdown(scenario, allocation, config.timescale_hands)
             values = [
                 label,
-                f"EUR {bankroll:,.0f}",
+                _money(config, bankroll),
                 allocation.label,
-                f"{allocation.eur_per_hour:,.0f}",
-                f"{allocation.eur_per_hour - best.eur_per_hour:+,.0f}" if best else "-",
+                _plain(config, allocation.eur_per_hour),
+                f"{config.currency.from_eur(allocation.eur_per_hour - best.eur_per_hour):+,.0f}"
+                if best else "-",
+                _plain(config, allocation.exposure_eur),
                 # Priced on the ROW's own scenario, so the EV of a bigger roll
                 # is the EV of the mix it can actually afford.
-                f"{horizon_ev(scenario, allocation):,.0f}",
+                _plain(config, horizon_ev(scenario, allocation)),
                 f"{allocation.risk_of_ruin:.2%}",
-                f"{swing['median']:,.0f}",
-                f"{swing['p99']:,.0f}",
+                _plain(config, swing["median"]),
+                _plain(config, swing["p90"]),
+                _plain(config, swing["p99"]),
                 note,
             ]
         for i, value in enumerate(values):
@@ -829,8 +945,8 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
 
     _footnote(
         slide,
-        "Each row is the optimum re-solved from scratch at that bankroll, at the same "
-        f"{config.ruin_tolerance:.2%} tolerance - a fresh problem, not a path. It does not "
+        "Each row is the optimum re-solved from scratch at that bankroll, under the same "
+        f"rule - a fresh problem, not a path. {risk_rule_note(config)} It does not "
         "model getting there: no move-down rule and no order of play, just the right answer "
         "if you were standing at that roll today. Risk of ruin and both downswing figures are "
         "measured from that row's bankroll as the starting point. " + drawdown_note(config),
@@ -863,9 +979,9 @@ def _simulation_slide(prs, layouts, config: Config, result, title, scales=(None,
         slide,
         f"{result.allocation.label}. {result.hands:,} hands ({result.hours:,.0f} hours at "
         f"{config.tables} tables) per lifetime, played at a fixed mix with no move-down rule - "
-        f"an upper bound on risk, not a forecast. Typical worst drawdown EUR {median_dd:,.0f}, "
-        f"one lifetime in ten worse than EUR {p90_dd:,.0f}, median finish EUR "
-        f"{median_end:,.0f}." + over_roll,
+        f"an upper bound on risk, not a forecast. Typical worst drawdown "
+        f"{_money(config, median_dd)}, one lifetime in ten worse than "
+        f"{_money(config, p90_dd)}, median finish {_money(config, median_end)}." + over_roll,
     )
     return slide
 
@@ -884,7 +1000,9 @@ def _random_paths_slide(prs, layouts, config: Config, result, title, best, curre
     if best is not None:
         ev_lines.append(("Optimal", best, charts.STATUS_GOOD))
     if current is not None and (best is None or current.counts != best.counts):
-        ev_lines.append(("Current", current, charts.STATUS_CRITICAL))
+        # Pink, not red: red is the ruin barrier on this very chart, and the mix
+        # you are playing is a reference line, not a hazard.
+        ev_lines.append(("Current", current, charts.COL_CURRENT))
 
     slide = pc.add_image_slide(
         prs, layouts, title,
@@ -893,12 +1011,12 @@ def _random_paths_slide(prs, layouts, config: Config, result, title, best, curre
 
     hands = result.hands
     spread = (
-        f"EUR {float(np.percentile(result.final_bankroll, 5)):,.0f} to EUR "
-        f"{float(np.percentile(result.final_bankroll, 95)):,.0f}"
+        f"{_money(config, float(np.percentile(result.final_bankroll, 5)))} to "
+        f"{_money(config, float(np.percentile(result.final_bankroll, 95)))}"
     )
     ev_note = "  ".join(
-        f"{label} EV finishes at EUR "
-        f"{config.bankroll_eur + allocation.mean_eur_per_100 * hands / 100:,.0f}."
+        f"{label} EV finishes at "
+        f"{_money(config, config.bankroll_eur + allocation.mean_eur_per_100 * hands / 100)}."
         for label, allocation, _ in ev_lines
     )
     _footnote(
@@ -986,11 +1104,11 @@ def _dominance_slide(prs, layouts, config: Config, allocations, best, current):
             (i for i, count in enumerate(current.counts) if count), default=None
         )
         detail = [
-            f"The mix in play earns {current.eur_per_hour:,.0f} EUR/hr at "
+            f"The mix in play earns {_money(config, current.eur_per_hour)}/hr at "
             f"{current.risk_of_ruin:.2%} ruin. {len(beaten):,} other mixes earn MORE and risk "
             "LESS - it is one of the wasteful ones, not a cautious one."
             if beaten else
-            f"The mix in play earns {current.eur_per_hour:,.0f} EUR/hr at "
+            f"The mix in play earns {_money(config, current.eur_per_hour)}/hr at "
             f"{current.risk_of_ruin:.2%} ruin, and nothing beats it on both axes at once.",
         ]
         if worst_seat is not None:
@@ -1005,7 +1123,8 @@ def _dominance_slide(prs, layouts, config: Config, allocations, best, current):
             f"{current.risk_of_ruin:.2%} - roughly "
             f"{config.ruin_tolerance / max(current.risk_of_ruin, 1e-12):.0f}x less risk than "
             f"has been authorised. That unused allowance is worth "
-            f"{best.eur_per_hour - current.eur_per_hour:+,.0f} EUR/hr."
+            f"{config.currency.from_eur(best.eur_per_hour - current.eur_per_hour):+,.0f} "
+            f"{config.currency.code}/hr."
         )
         sections.append(("Your case, in three numbers", detail))
 
@@ -1049,8 +1168,9 @@ def _methodology_slide(prs, layouts, config: Config):
     sections = [
         ("The question", [
             "Which distribution of tables across stakes earns the most, without exceeding a "
-            "chosen risk of ruin. Volume is divisible across tables, so the decision variable "
+            "chosen risk tolerance. Volume is divisible across tables, so the decision variable "
             "is the share of tables at each stake, not a single stake.",
+            risk_rule_note(config),
         ]),
         ("The maths", [
             "Per 100 hands dealt across all tables, a mix has mean  SUM (n/T) x winrate x bb, "
@@ -1068,8 +1188,12 @@ def _methodology_slide(prs, layouts, config: Config):
             "Win rates are already net of rake, so adding rakeback does not double-count.",
         ]),
         ("What is assumed, not measured", [
-            "Standard deviation is a flat 92 bb/100 at every stake - an assumption. If real "
-            "variance falls as stakes rise, the higher stakes are being penalised here.",
+            # Was "a flat 92 bb/100 at every stake", which the config has not
+            # been for some time - it is measured wherever the sample allows.
+            "Standard deviation is MEASURED at the stakes with a real sample and ASSUMED at "
+            f"92 bb/100 at the thin ones - see the run-parameters slide for which is which. "
+            "A measured SD off a few hundred hands would understate the variance badly, which "
+            "is why those are overridden rather than believed.",
             "Tables are treated as independent. Multi-tabling correlates outcomes within a "
             "session, which would raise effective variance.",
             "No win-rate penalty is charged for table count.",
@@ -1118,6 +1242,19 @@ def _methodology_slide(prs, layouts, config: Config):
             "before busting, every risk number here is an upper bound.",
         ]),
     ]
+
+    note = config.currency.note()
+    if note:
+        sections.append((
+            "Currency",
+            [
+                note,
+                "The rate is a fixed constant, not a live quote - a bankroll plan that moved "
+                "with spot would not be a plan, and rebuilding the deck would silently change "
+                "every figure on it. The tables themselves are dealt in EUR throughout, and "
+                "the big blinds on the run-parameters slide stay in EUR for that reason.",
+            ],
+        ))
 
     first = True
     for heading, points in sections:
@@ -1223,15 +1360,30 @@ def _prime_simulations(config: Config, screens, edge, best, current) -> dict:
     return results
 
 
-def build(config: Config, directory: Path) -> Path:
-    """Build the deck and return the path written."""
+def build(config: Config, directory: Path, workbook_path: Path | None = None) -> Path:
+    """Build the deck and return the path written.
+
+    With `workbook_path`, the same numbers are also written there as a
+    spreadsheet. It happens INSIDE this function rather than beside it because
+    every value the workbook wants is one this function already has: doing it
+    from outside would mean a second tolerance walk and a second round of
+    simulations, and any drift between the two would ship as a spreadsheet that
+    contradicts its own deck.
+
+    The caller supplies the path, so it knows what was written without this
+    returning a second value and disturbing every existing call site.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "stake_optimisation.pptx"
 
     screens = mix.screen_stakes(config)
     allocations = mix.all_allocations(config)
     edge = mix.frontier(allocations)
-    best = mix.best_allocation(allocations)
+    best = mix.best_allocation(
+        allocations,
+        config,
+        progress_label="testing mixes" if config.risk_mode != "ruin" else None,
+    )
 
     current = mix.current_allocation(config)
 
@@ -1271,6 +1423,13 @@ def build(config: Config, directory: Path) -> Path:
     pc.add_image_slide(
         prs, layouts, "Every way to split the tables",
         charts.allocation_frontier_figure(config),
+    )
+    # The same trade-off on the other risk axis. Every point it needs has already
+    # been simulated by this stage, so it is cheap here even though the chart is
+    # the expensive one to build cold.
+    pc.add_image_slide(
+        prs, layouts, "The same split, priced in downswings",
+        charts.allocation_frontier_downswing_figure(config),
     )
     _configurations_slide(prs, layouts, config, allocations, edge, best, current)
     if best is not None:
@@ -1321,4 +1480,17 @@ def build(config: Config, directory: Path) -> Path:
     _methodology_slide(prs, layouts, config)
 
     prs.save(path)
+
+    if workbook_path is not None:
+        from . import workbook
+
+        # Every simulated figure it asks for is already in sim's cache, so this
+        # costs a few seconds of writing rather than another round of Monte Carlo.
+        workbook.write(
+            workbook_path, config, screens, allocations, edge, best, current,
+            simulations,
+            bankroll_ladder(config) if best is not None else [],
+            mix.step_up_options(config, best) if best is not None else [],
+        )
+
     return path

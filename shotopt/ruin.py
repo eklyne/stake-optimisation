@@ -26,7 +26,35 @@ __all__ = [
     "bankroll_for_ruin",
     "drawdown_probability",
     "loss_below_start_quantile",
+    "odds_against",
 ]
+
+
+def odds_against(probability: float) -> str:
+    """A probability as bookmakers' odds against: 1e-4 -> `10,000/1`.
+
+    Risk of ruin arrives as a decimal with a run of leading zeros, which is the
+    least readable form a small probability has. Odds-against is the form a poker
+    player already reads fluently, and it makes the difference between 0.01% and
+    0.0001% obvious instead of a zero-counting exercise.
+
+    Capped, because the safe end of this ladder runs to 1e-129 and the literal
+    odds there are a 130-digit integer - which is not a number, it is a wall.
+    Anything rarer than one in a million collapses to a single band: no decision
+    turns on whether a mix busts you once per million lifetimes or once per
+    10^129, and printing the difference only invites someone to weigh it.
+
+    Lives here rather than in the charts so the terminal and the slides can share
+    one spelling without the text commands importing matplotlib.
+    """
+    if probability <= 0:
+        return "<1M/1"
+    if probability >= 1:
+        return "certain"
+    odds = 1.0 / probability
+    if odds >= 1e6:
+        return "<1M/1"
+    return f"{odds:,.0f}/1"
 
 
 def effective_stdev(stdev: float, tables: int, correlation: float = 0.0) -> float:

@@ -195,11 +195,12 @@ class TestRakeback(unittest.TestCase):
 
 class TestOptimisation(unittest.TestCase):
     def test_best_is_inside_tolerance_and_beats_every_other_inside_it(self):
-        allocations = mix.all_allocations(_config())
-        best = mix.best_allocation(allocations)
-        self.assertTrue(best.within_tolerance)
+        config = _config()
+        allocations = mix.all_allocations(config)
+        best = mix.best_allocation(allocations, config)
+        self.assertTrue(best.within_ruin_tolerance)
         for allocation in allocations:
-            if allocation.within_tolerance:
+            if allocation.within_ruin_tolerance:
                 self.assertLessEqual(allocation.eur_per_hour, best.eur_per_hour + 1e-9)
 
     def test_the_optimum_beats_or_matches_every_single_stake_option(self):
@@ -207,29 +208,32 @@ class TestOptimisation(unittest.TestCase):
         # best pure allocation, because the pure ones are in the search space.
         config = _config()
         allocations = mix.all_allocations(config)
-        best = mix.best_allocation(allocations)
+        best = mix.best_allocation(allocations, config)
         pure = [a for a in allocations if sum(1 for c in a.counts if c) == 1]
         best_pure = max(
-            (a for a in pure if a.within_tolerance), key=lambda a: a.eur_per_hour, default=None
+            (a for a in pure if a.within_ruin_tolerance), key=lambda a: a.eur_per_hour, default=None
         )
         self.assertIsNotNone(best_pure)
         self.assertGreaterEqual(best.eur_per_hour, best_pure.eur_per_hour)
 
     def test_none_when_nothing_clears(self):
-        allocations = mix.all_allocations(_config(bankroll_eur=200.0, ruin_tolerance=1e-6))
-        self.assertIsNone(mix.best_allocation(allocations))
+        config = _config(bankroll_eur=200.0, ruin_tolerance=1e-6)
+        self.assertIsNone(mix.best_allocation(mix.all_allocations(config), config))
 
     def test_a_bigger_bankroll_never_reduces_the_optimum(self):
         earnings = []
         for bankroll in (3000.0, 10_000.0, 40_000.0, 200_000.0):
-            best = mix.best_allocation(mix.all_allocations(_config(bankroll_eur=bankroll)))
+            config = _config(bankroll_eur=bankroll)
+            best = mix.best_allocation(mix.all_allocations(config), config)
             earnings.append(best.eur_per_hour if best else 0.0)
         self.assertEqual(earnings, sorted(earnings))
 
     def test_a_looser_tolerance_never_reduces_the_optimum(self):
-        tight = mix.best_allocation(mix.all_allocations(_config(ruin_tolerance=0.005)))
-        loose = mix.best_allocation(mix.all_allocations(_config(ruin_tolerance=0.20)))
-        self.assertGreaterEqual(loose.eur_per_hour, tight.eur_per_hour)
+        def solve(tolerance):
+            config = _config(ruin_tolerance=tolerance)
+            return mix.best_allocation(mix.all_allocations(config), config)
+
+        self.assertGreaterEqual(solve(0.20).eur_per_hour, solve(0.005).eur_per_hour)
 
 
 class TestFrontier(unittest.TestCase):
@@ -251,8 +255,9 @@ class TestFrontier(unittest.TestCase):
                 self.assertFalse(dominates, f"{other.label} dominates {point.label}")
 
     def test_the_best_allocation_is_on_the_frontier(self):
-        allocations = mix.all_allocations(_config())
-        best = mix.best_allocation(allocations)
+        config = _config()
+        allocations = mix.all_allocations(config)
+        best = mix.best_allocation(allocations, config)
         self.assertIn(best.counts, {a.counts for a in mix.frontier(allocations)})
 
 
@@ -393,7 +398,7 @@ class TestStakeScreen(unittest.TestCase):
             [a.counts for a in mix.frontier(full)],
         )
         self.assertEqual(
-            mix.best_allocation(pruned).counts, mix.best_allocation(full).counts
+            mix.best_allocation(pruned, config).counts, mix.best_allocation(full, config).counts
         )
 
 

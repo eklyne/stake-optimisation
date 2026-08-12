@@ -1,9 +1,20 @@
 """Loading and validating the four inputs.
 
-The tool takes exactly four things: a bankroll in euros, how many tables are
-played at once, a win rate and standard deviation for each stake there is data
-on, and a risk-of-ruin tolerance. Everything else is a default that is rarely
-touched.
+The tool takes exactly four things: a bankroll, how many tables are played at
+once, a win rate and standard deviation for each stake there is data on, and a
+risk tolerance. Everything else is a default that is rarely touched.
+
+Two of those four have a choice attached, and both are resolved here so nothing
+downstream has to think about them again:
+
+* **The risk tolerance** comes in two shapes - an all-time risk of ruin, or a
+  probability of a downswing of a stated size over a stated number of hands. See
+  `tolerance.py`. The `[risk]` block picks one; both sets of numbers are carried
+  either way, because the deck draws both pictures regardless of which one binds.
+* **The currency** money is read in. The model is euros end to end (see
+  `money.py`); a display currency converts the money you TYPE on the way in, and
+  the money you READ on the way out. `bankroll_eur` below is therefore always
+  euros, whatever the file said.
 
 Validation is strict and loud. A silently-accepted bad standard deviation
 produces a plausible-looking bankroll recommendation that is wrong by a factor of
@@ -16,9 +27,24 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["Stake", "Config", "ConfigError", "load_config", "DEFAULT_CONFIG_PATH"]
+from .money import EUR, Currency
+
+__all__ = [
+    "Stake", "Config", "ConfigError", "load_config", "DEFAULT_CONFIG_PATH", "RISK_MODES",
+]
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
+
+RISK_MODES = ("ruin", "downswing", "both")
+"""The legal values of `[risk] mode`. Lives here, not in `tolerance`, so that
+validating a config never has to import the simulation or numpy behind it.
+
+`both` is the intersection - a mix must clear the ruin bar AND the downswing
+bar - so the stricter of the two decides, and which one that is changes on its
+own as the bankroll moves."""
+
+_MODES_NEEDING_DOWNSWING = ("downswing", "both")
+"""Modes where `downswing_amount` stops being optional."""
 
 _STAKE_REQUIRED = ("name", "bb_eur", "winrate_bb100", "stdev_bb100")
 _STAKE_KNOWN = _STAKE_REQUIRED + (
@@ -26,9 +52,10 @@ _STAKE_KNOWN = _STAKE_REQUIRED + (
 )
 _TOP_LEVEL_KNOWN = frozenset(
     {
-        "bankroll_eur",
+        "bankroll",
         "tables",
-        "ruin_tolerance",
+        "currency",
+        "fx_eur_per_unit",
         "kelly_fraction",
         "hands_per_hour_per_table",
         "winrate_haircut_bb_per_table",
@@ -36,9 +63,30 @@ _TOP_LEVEL_KNOWN = frozenset(
         "rakeback_pct",
         "timescale_hands",
         "sim_paths",
+        "risk",
         "stake",
     }
 )
+_RISK_KNOWN = frozenset(
+    {
+        "mode",
+        "ruin_tolerance",
+        "downswing_amount",
+        "downswing_hands",
+        "downswing_probability",
+    }
+)
+
+_MOVED_KEYS = {
+    "bankroll_eur": (
+        "rename it to 'bankroll' - it is now read in the display currency set by "
+        "'currency' (which defaults to EUR, so the value need not change)"
+    ),
+    "ruin_tolerance": "move it under the [risk] table",
+}
+"""Keys that used to be top-level. The whitelist would reject these anyway, but
+with an unhelpful 'unknown key' - and silently dropping a risk tolerance or a
+bankroll is exactly the kind of thing that must never happen quietly."""
 
 
 class ConfigError(ValueError):
@@ -94,9 +142,27 @@ class Config:
     """The four inputs, plus the defaults."""
 
     bankroll_eur: float
+    """ALWAYS euros, whatever currency the file typed it in."""
     tables: int
     ruin_tolerance: float
+    """Kept in both modes: the ruin figure is reported and charted either way."""
     stakes: tuple[Stake, ...]
+
+    risk_mode: str = "ruin"
+    """Which rule decides the answer - see `tolerance.MODES`."""
+    downswing_amount_eur: float | None = None
+    """X: the peak-to-trough fall being priced, in euros. Required in downswing
+    mode; None in ruin mode, where the downswing chart is drawn with no line on it."""
+    downswing_hands: int = 500_000
+    """Y: the horizon the downswing question is asked over. Peak-to-trough
+    drawdown grows without bound over unlimited time, so there is no such thing as
+    an all-time value and the horizon is not optional."""
+    downswing_probability: float = 0.05
+    """p: how often you are willing to have a downswing that bad, or worse."""
+
+    currency: Currency = EUR
+    """Display only. Never appears in a calculation - see `money.py`."""
+
     kelly_fraction: float = 0.5
     hands_per_hour_per_table: float = 75.0
     winrate_haircut_bb_per_table: float = 0.0
@@ -132,6 +198,28 @@ class Config:
                 f"rakeback_pct must be a share between 0 and 1 (0.3 for 30%), "
                 f"got {self.rakeback_pct}"
             )
+        if self.risk_mode not in RISK_MODES:
+            raise ConfigError(
+                f"risk mode must be one of {list(RISK_MODES)}, got {self.risk_mode!r}"
+            )
+        if self.risk_mode in _MODES_NEEDING_DOWNSWING and self.downswing_amount_eur is None:
+            raise ConfigError(
+                f"risk mode '{self.risk_mode}' needs [risk] downswing_amount - the size "
+                f"of the fall you are pricing"
+            )
+        if self.downswing_amount_eur is not None and self.downswing_amount_eur <= 0:
+            raise ConfigError(
+                f"downswing_amount must be positive, got {self.downswing_amount_eur}"
+            )
+        if self.downswing_hands < 100:
+            raise ConfigError(
+                f"downswing_hands must be at least 100, got {self.downswing_hands}"
+            )
+        if not 0.0 < self.downswing_probability < 1.0:
+            raise ConfigError(
+                f"downswing_probability must be strictly between 0 and 1, "
+                f"got {self.downswing_probability}"
+            )
         if not self.stakes:
             raise ConfigError("no stakes configured - nothing to report on")
 
@@ -149,6 +237,90 @@ def _require_number(raw: dict, key: str, where: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{where}: '{key}' must be a number, got {value!r}")
     return float(value)
+
+
+def _parse_currency(raw: dict, where: str) -> Currency:
+    """The display currency, and the fixed rate that reaches it from euros.
+
+    Defaults to EUR at a rate of 1.0, which makes every conversion an identity -
+    so a config that says nothing about currency behaves exactly as it did before
+    this existed.
+    """
+    code = str(raw.get("currency", EUR.code)).upper()
+    if code == EUR.code:
+        # A rate on the base currency can only be a mistake, and silently
+        # ignoring it would leave every figure 16% out with no warning.
+        rate = raw.get("fx_eur_per_unit")
+        if rate is not None and float(rate) != 1.0:
+            raise ConfigError(
+                f"{where}: currency is EUR, so fx_eur_per_unit must be 1.0 (or absent), "
+                f"got {rate}"
+            )
+        return EUR
+    if "fx_eur_per_unit" not in raw:
+        raise ConfigError(
+            f"{where}: currency = '{code}' needs fx_eur_per_unit - the euros in one "
+            f"{code} (e.g. 1.16 for GBP). The rate is fixed by you, not fetched."
+        )
+    rate = _require_number(raw, "fx_eur_per_unit", where)
+    if rate <= 0:
+        raise ConfigError(f"{where}: fx_eur_per_unit must be positive, got {rate}")
+    return Currency(code, rate)
+
+
+def _parse_risk(raw: dict, currency: Currency, where: str) -> dict:
+    """The `[risk]` block: which rule binds, and the numbers behind both of them.
+
+    Both rules' settings are read whatever the mode, because the deck draws both
+    frontier charts either way - only `mode` decides which one gates the answer.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: [risk] must be a table, got {raw!r}")
+    unknown = set(raw) - _RISK_KNOWN
+    if unknown:
+        raise ConfigError(f"{where}: unknown key(s) in [risk]: {sorted(unknown)}")
+
+    mode = str(raw.get("mode", "ruin"))
+    if mode not in RISK_MODES:
+        raise ConfigError(
+            f"{where}: [risk] mode must be one of {list(RISK_MODES)}, got {mode!r}"
+        )
+
+    if "ruin_tolerance" not in raw:
+        raise ConfigError(
+            f"{where}: [risk] needs ruin_tolerance even in '{mode}' mode - the ruin "
+            f"figure is reported and charted whichever rule binds"
+        )
+    ruin_tolerance = _require_number(raw, "ruin_tolerance", f"{where} [risk]")
+
+    amount = raw.get("downswing_amount")
+    if amount is not None:
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise ConfigError(
+                f"{where}: [risk] downswing_amount must be a number, got {amount!r}"
+            )
+        # Typed in the display currency, like the bankroll it is compared against.
+        amount = currency.to_eur(float(amount))
+    elif mode in _MODES_NEEDING_DOWNSWING:
+        raise ConfigError(
+            f"{where}: [risk] mode = '{mode}' needs downswing_amount - the size of "
+            f"the peak-to-trough fall you are pricing, in {currency.code}"
+        )
+
+    hands = raw.get("downswing_hands", 500_000)
+    if isinstance(hands, bool) or not isinstance(hands, int):
+        raise ConfigError(
+            f"{where}: [risk] downswing_hands must be an integer, got {hands!r}"
+        )
+    probability = float(raw.get("downswing_probability", 0.05))
+
+    return {
+        "mode": mode,
+        "ruin_tolerance": ruin_tolerance,
+        "downswing_amount_eur": amount,
+        "downswing_hands": hands,
+        "downswing_probability": probability,
+    }
 
 
 def _parse_stake(raw: dict, index: int) -> Stake:
@@ -237,13 +409,20 @@ def load_config(path: str | Path | None = None) -> Config:
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"{path}: could not parse TOML - {exc}") from exc
 
+    where = str(path)
+    for moved, advice in _MOVED_KEYS.items():
+        if moved in raw:
+            raise ConfigError(f"{where}: '{moved}' has moved - {advice}")
+
     unknown = set(raw) - _TOP_LEVEL_KNOWN
     if unknown:
         raise ConfigError(f"{path}: unknown top-level key(s) {sorted(unknown)}")
 
-    where = str(path)
-    bankroll_eur = _require_number(raw, "bankroll_eur", where)
-    ruin_tolerance = _require_number(raw, "ruin_tolerance", where)
+    currency = _parse_currency(raw, where)
+    # The one conversion on the way in. Everything below this line is euros.
+    bankroll_eur = currency.to_eur(_require_number(raw, "bankroll", where))
+    risk = _parse_risk(raw.get("risk", {}), currency, where)
+    ruin_tolerance = risk["ruin_tolerance"]
 
     tables = raw.get("tables")
     if isinstance(tables, bool) or not isinstance(tables, int):
@@ -264,7 +443,7 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ConfigError(f"{where}: sim_paths must be at least 1, got {sim_paths}")
 
     if bankroll_eur <= 0:
-        raise ConfigError(f"{where}: bankroll_eur must be positive, got {bankroll_eur}")
+        raise ConfigError(f"{where}: bankroll must be positive, got {bankroll_eur}")
     if tables < 1:
         raise ConfigError(f"{where}: tables must be at least 1, got {tables}")
     if not 0.0 < ruin_tolerance < 1.0:
@@ -301,6 +480,11 @@ def load_config(path: str | Path | None = None) -> Config:
         tables=tables,
         ruin_tolerance=ruin_tolerance,
         stakes=stakes,
+        risk_mode=risk["mode"],
+        downswing_amount_eur=risk["downswing_amount_eur"],
+        downswing_hands=risk["downswing_hands"],
+        downswing_probability=risk["downswing_probability"],
+        currency=currency,
         kelly_fraction=kelly_fraction,
         hands_per_hour_per_table=hands_per_hour_per_table,
         winrate_haircut_bb_per_table=haircut,

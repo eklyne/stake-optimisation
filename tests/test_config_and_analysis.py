@@ -10,8 +10,10 @@ from shotopt.analysis import best_affordable, build_reports
 from shotopt.config import Config, ConfigError, Stake, load_config
 
 BASE_TOML = """
-bankroll_eur = 5000
+bankroll = 5000
 tables = 12
+
+[risk]
 ruin_tolerance = 0.01
 
 [[stake]]

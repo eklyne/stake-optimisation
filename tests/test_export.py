@@ -59,11 +59,13 @@ class TestStakeScreenCsv(unittest.TestCase):
         self.assertEqual(self.rows[0]["max_tables"], "")
 
     def test_numbers_match_the_screen(self):
+        # Money columns carry the display currency's code, and at the default EUR
+        # config the values are the internal ones untouched.
         self.assertAlmostEqual(
-            float(self.rows[0]["eur_per_hour"]), self.screens[0].eur_per_hour, places=3
+            float(self.rows[0]["per_hour_eur"]), self.screens[0].eur_per_hour, places=3
         )
         self.assertAlmostEqual(
-            float(self.rows[0]["mean_eur_per_100"]), self.screens[0].mean_eur_per_100, places=3
+            float(self.rows[0]["mean_per_100_eur"]), self.screens[0].mean_eur_per_100, places=3
         )
 
 
@@ -73,7 +75,7 @@ class TestFrontierCsv(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         allocations = mix.all_allocations(self.config)
         self.edge = mix.frontier(allocations)
-        self.best = mix.best_allocation(allocations)
+        self.best = mix.best_allocation(allocations, self.config)
         self.path = export.write_frontier(
             self.edge, self.config, self.best, self.dir / "frontier.csv"
         )
@@ -106,7 +108,7 @@ class TestFrontierCsv(unittest.TestCase):
         )
 
     def test_rows_are_ordered_like_the_printed_table(self):
-        earnings = [float(r["eur_per_hour"]) for r in self.rows]
+        earnings = [float(r["per_hour_eur"]) for r in self.rows]
         self.assertEqual(earnings, sorted(earnings))
 
 
@@ -119,7 +121,7 @@ class TestWriteTables(unittest.TestCase):
             mix.screen_stakes(config),
             mix.frontier(allocations),
             config,
-            mix.best_allocation(allocations),
+            mix.best_allocation(allocations, config),
             target,
         )
         self.assertEqual([p.name for p in written], ["stake_screen.csv", "frontier.csv"])
@@ -128,7 +130,7 @@ class TestWriteTables(unittest.TestCase):
     def test_survives_no_allocation_clearing_tolerance(self):
         config = _config(bankroll_eur=50.0, ruin_tolerance=1e-9)
         allocations = mix.all_allocations(config)
-        self.assertIsNone(mix.best_allocation(allocations))
+        self.assertIsNone(mix.best_allocation(allocations, config))
         written = export.write_tables(
             mix.screen_stakes(config),
             mix.frontier(allocations),

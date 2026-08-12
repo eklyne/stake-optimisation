@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from . import rates, ruin
 from .config import Config, Stake
@@ -48,6 +49,8 @@ __all__ = [
     "evaluate",
     "all_allocations",
     "best_allocation",
+    "search_allocations",
+    "ToleranceSearch",
     "frontier",
     "marginal_step_up",
 ]
@@ -73,7 +76,11 @@ class Allocation:
     variance_eur_per_100: float
     eur_per_hour: float
     risk_of_ruin: float
-    within_tolerance: bool
+    within_ruin_tolerance: bool
+    """Whether the ANALYTIC ruin rule admits this mix - computed for every
+    allocation whichever risk mode is active, because the ruin frontier is
+    charted and exported either way. In downswing mode it is NOT the verdict;
+    `tolerance.for_config` holds that."""
     drawdown_50: float
 
     @property
@@ -89,6 +96,23 @@ class Allocation:
     @property
     def stdev_eur_per_100(self) -> float:
         return math.sqrt(self.variance_eur_per_100)
+
+    @property
+    def exposure_eur(self) -> float:
+        """Money sitting on the tables at once, at a full 100bb buy-in per seat.
+
+        The figure that puts a mix in perspective against the bankroll behind it.
+        Everything else here is a RATE (per hour, per 100 hands) or a
+        probability; this is the stock rather than the flow - what is actually
+        in front of you, and therefore losable today rather than eventually.
+
+        A 100bb buy-in is the convention the rest of the tool sizes in. Real
+        stacks drift above and below it, so read this as the sit-down figure
+        rather than a live measurement.
+        """
+        return sum(
+            count * stake.buyin_eur for count, stake in zip(self.counts, self.stakes)
+        )
 
     def loss_below_start(self, quantile: float) -> float | None:
         """Deepest fall below the starting bankroll, in euros, at `quantile`.
@@ -118,6 +142,8 @@ class StakeScreen:
     """Set when another stake earns at least as much at no more variance."""
     excluded_reason: str | None = None
     """Why this stake is out of the allocation, or None if it is in it."""
+    exposure_eur: float = 0.0
+    """Money on the tables at once with the whole table count at this stake."""
 
     @property
     def kept(self) -> bool:
@@ -196,6 +222,9 @@ def screen_stakes(config: Config) -> list[StakeScreen]:
                 eur_per_hour=hourlies[index],
                 dominated_by=dominated_by,
                 excluded_reason=excluded_reason,
+                # This row prices the whole table count at one stake, so the
+                # exposure is that count of full buy-ins.
+                exposure_eur=tables * stake.buyin_eur,
             )
         )
     return screens
@@ -298,7 +327,7 @@ def evaluate(counts: tuple[int, ...], config: Config) -> Allocation:
         variance_eur_per_100=variance,
         eur_per_hour=mean * hands / 100.0,
         risk_of_ruin=min(risk, 1.0),
-        within_tolerance=risk <= config.ruin_tolerance,
+        within_ruin_tolerance=risk <= config.ruin_tolerance,
         drawdown_50=min(drawdown_50, 1.0),
     )
 
@@ -326,17 +355,148 @@ def all_allocations(config: Config, prune: bool = True) -> list[Allocation]:
     ]
 
 
-def best_allocation(allocations: list[Allocation]) -> Allocation | None:
+MAX_TOLERANCE_TESTS = 6000
+"""Ceiling on how many DISTINCT mixes the walk will SIMULATE.
+
+Counted in distinct (mean, variance) pairs, not allocations, and only mixes that
+survive the free analytic prune are counted at all. It is a backstop against a
+pathological config, not a working limit, and it is set above the size of any
+allocation space this tool can enumerate quickly - so in practice the walk always
+runs to completion and the honest-reporting path below never fires.
+
+It was 400, which turned out to bind for a REASON THAT RUNS BACKWARDS. The
+analytic floor is proportional to ln(1/p), so a LOOSER downswing probability
+prunes less: at p=1% the bound carries ln(100)=4.6 and clears 5,295 of 6,188
+mixes, while at p=10% it carries only ln(10)=2.3 and clears 3,759. Relaxing the
+tolerance therefore made the search harder, not easier, and a limit that looked
+generous under one setting silently ran out under a milder one. Each test is a
+few hundredths of a second at screen precision, so the ceiling costs nothing to
+raise and buys immunity to that whole class of surprise.
+
+Hitting it is NOT the same as finding nothing admissible, and the two must never
+be reported alike: see `ToleranceSearch.exhausted`. An earlier version returned a
+bare None for both, and on a 6,188-allocation space it spent the whole budget on
+the bold end and announced that nothing cleared a tolerance that four hundred
+mixes cleared."""
+
+
+class ToleranceSearch(NamedTuple):
+    """The outcome of a walk: the winner, and whether the search was complete.
+
+    `exhausted` False means the budget ran out with candidates still unexamined,
+    so `best` being None means "not found yet", not "does not exist". Callers
+    must say which - a wrong "nothing clears your tolerance" sends you down a
+    stake for no reason.
+    """
+
+    best: "Allocation | None"
+    tested: int
+    """Distinct mixes actually simulated."""
+    pruned: int
+    """Mixes rejected for free by the analytic bound, without simulating."""
+    exhausted: bool
+    """True if every candidate was considered."""
+
+
+def best_allocation(
+    allocations: list[Allocation],
+    config: Config,
+    progress_label: str | None = None,
+) -> Allocation | None:
     """Highest EUR/hour that stays inside tolerance - the decision rule, applied.
 
     Ties on EUR/hour are broken toward the lower risk, which matters more often
     than it sounds: two different mixes can earn near-identical hourly rates at
     very different variance.
+
+    Under the RUIN rule every allocation was already scored when it was built, so
+    this is a filter and a max. Under the DOWNSWING rule each test costs a
+    simulation, so it becomes a walk instead: sort by the objective and take the
+    first mix the rule admits. Since the objective IS EUR/hour, the first
+    admissible mix is the best one - there is nothing above it left to check, and
+    the walk stops the moment it succeeds.
+
+    Two things keep that walk affordable, and neither trades away exactness:
+
+    1. Candidates are deduplicated on (mean, variance). Those two numbers are the
+       whole input to the simulation, so mixes sharing them share an answer -
+       `sim._max_drawdown_samples` caches on exactly that, and the repeats are free.
+    2. The rule itself screens cheaply before it commits (see
+       `tolerance.DownswingTolerance.admits`), so the many rejections cost a
+       fraction of the few acceptances.
     """
-    inside = [a for a in allocations if a.within_tolerance]
-    if not inside:
-        return None
-    return max(inside, key=lambda a: (a.eur_per_hour, -a.risk_of_ruin))
+    return search_allocations(allocations, config, progress_label).best
+
+
+def search_allocations(
+    allocations: list[Allocation],
+    config: Config,
+    progress_label: str | None = None,
+) -> ToleranceSearch:
+    """`best_allocation`, with the search's own diagnostics attached.
+
+    Use this where the CALLER has to distinguish "nothing qualifies" from "the
+    search gave up" - which is anywhere the result is reported to a human.
+    """
+    from . import tolerance as _tolerance  # deferred: reaches sim, and numpy with it
+
+    rule = _tolerance.for_config(config)
+
+    if isinstance(rule, _tolerance.RuinTolerance):
+        inside = [a for a in allocations if a.within_ruin_tolerance]
+        best = (
+            max(inside, key=lambda a: (a.eur_per_hour, -a.risk_of_ruin))
+            if inside else None
+        )
+        return ToleranceSearch(best, len(allocations), 0, True)
+
+    ordered = sorted(allocations, key=lambda a: (-a.eur_per_hour, a.risk_of_ruin))
+    bar = None
+    if progress_label:
+        from .progress import Progress
+
+        bar = Progress(min(len(ordered), MAX_TOLERANCE_TESTS), progress_label)
+
+    # The free rejections. Peak-to-trough drawdown is pathwise at least the fall
+    # below the starting point, and that one has a closed form - so a mix whose
+    # ANALYTIC figure already breaks the limit certainly breaks the simulated one.
+    # On a large space this removes most of the bold end before any Monte Carlo
+    # runs, which is what lets the walk reach an admissible mix inside its budget.
+    downswing = getattr(rule, "downswing", rule)
+    limit = rule.limit(config)
+
+    seen: dict[tuple[float, float], bool] = {}
+    pruned = 0
+    best: Allocation | None = None
+    exhausted = True
+
+    try:
+        for candidate in ordered:
+            shape = (candidate.mean_eur_per_100, candidate.variance_eur_per_100)
+            verdict = seen.get(shape)
+            if verdict is None:
+                floor = downswing.floor(candidate, config)
+                if floor is not None and floor > limit:
+                    seen[shape] = False
+                    pruned += 1
+                    continue
+                if len(seen) - pruned >= MAX_TOLERANCE_TESTS:
+                    # Out of budget with candidates left: NOT the same as finding
+                    # nothing, and flagged as such rather than returning a bare None.
+                    exhausted = False
+                    break
+                verdict = rule.admits(candidate, config)
+                seen[shape] = verdict
+                if bar:
+                    bar.advance(candidate.label)
+            if verdict:
+                best = candidate
+                break
+    finally:
+        if bar:
+            bar.close()
+
+    return ToleranceSearch(best, len(seen) - pruned, pruned, exhausted)
 
 
 def frontier(allocations: list[Allocation]) -> list[Allocation]:
@@ -394,12 +554,15 @@ def step_up_options(config: Config, best: Allocation | None = None) -> list[Step
     table count is unchanged and each is reachable tomorrow from what is being
     played today. Returns whichever of the two exist and differ.
     """
+    from . import tolerance as _tolerance
+
     allocations = all_allocations(config)
     if best is None:
-        best = best_allocation(allocations)
+        best = best_allocation(allocations, config)
     if best is None:
         return []
 
+    rule = _tolerance.for_config(config)
     stakes = config.stakes
     used = [index for index, count in enumerate(best.counts) if count]
     if not used:
@@ -420,7 +583,10 @@ def step_up_options(config: Config, best: Allocation | None = None) -> list[Step
                 allocation=allocation,
                 eur_per_hour_delta=allocation.eur_per_hour - best.eur_per_hour,
                 ruin_multiple=allocation.risk_of_ruin / max(best.risk_of_ruin, 1e-12),
-                within_tolerance=allocation.within_tolerance,
+                # Judged by whichever rule is live, so "this shot is outside
+                # tolerance" means the same thing here as it does on the frontier.
+                # At most two options, so at most two simulations in downswing mode.
+                within_tolerance=rule.admits(allocation, config),
             )
         )
 

@@ -35,9 +35,12 @@ __all__ = [
     "SimResult",
     "simulate",
     "expected_drawdown",
+    "drawdown_quantile",
     "DEFAULT_HANDS",
     "DEFAULT_PATHS",
     "TABLE_PATHS",
+    "TOLERANCE_PATHS",
+    "SCREEN_PATHS",
 ]
 
 DEFAULT_HANDS = 1_000_000
@@ -50,6 +53,21 @@ Fewer than the headline charts use: a median and a 99th percentile settle down
 long before a histogram looks smooth, and this runs once per row across a dozen
 mixes. Named rather than left as a default argument so the slide footnotes can
 state the real figure instead of a number that might drift out of step."""
+
+TOLERANCE_PATHS = TABLE_PATHS
+"""Lifetimes behind a downswing tolerance VERDICT.
+
+Same figure as a table row and for the same reason - a single quantile settles
+long before a histogram does. Named separately because this one decides which mix
+you play, so if it ever needs to move it should move on its own argument."""
+
+SCREEN_PATHS = 500
+"""Lifetimes behind the cheap first pass.
+
+`tolerance.DownswingTolerance.admits` screens at this count and only pays for
+`TOLERANCE_PATHS` on candidates that survive. Rejecting a mix whose drawdown is
+half again over the limit does not need four thousand paths, and the walk down the
+frontier rejects far more candidates than it accepts."""
 
 _HANDS_PER_STEP = 100
 """Simulate in 100-hand blocks, the unit the win rate and variance arrive in.
@@ -103,6 +121,58 @@ class SimResult:
 _DRAWDOWN_CACHE: dict = {}
 
 
+def _max_drawdown_samples(
+    config: Config, allocation: Allocation, hands: int, paths: int
+) -> tuple[np.ndarray, float]:
+    """The per-lifetime worst peak-to-trough falls, and the ruin rate beside them.
+
+    Cached on everything the simulation actually consumes. Note what is IN the
+    key: `mean_eur_per_100` and `variance_eur_per_100`, not the stake mix. Those
+    two numbers, the bankroll and the horizon are the entire input to `simulate` -
+    so two different allocations that happen to share them have the same drawdown
+    distribution by construction, and the second one is free. That is not an
+    approximation, and the downswing walk in `mix` leans on it heavily.
+
+    The raw array is cached rather than a fixed set of percentiles, so any
+    quantile a caller wants afterwards costs nothing. Four thousand floats per
+    entry is nothing next to re-running the paths.
+    """
+    key = (
+        config.bankroll_eur,
+        hands,
+        paths,
+        allocation.mean_eur_per_100,
+        allocation.variance_eur_per_100,
+    )
+    cached = _DRAWDOWN_CACHE.get(key)
+    if cached is None:
+        result = simulate(config, allocation, hands=hands, paths=paths, seed=4242)
+        cached = (result.max_drawdown, result.ruin_probability)
+        _DRAWDOWN_CACHE[key] = cached
+    return cached
+
+
+def drawdown_quantile(
+    config: Config,
+    allocation: Allocation,
+    hands: int,
+    quantile: float,
+    paths: int = TOLERANCE_PATHS,
+) -> float:
+    """The peak-to-trough fall this mix reaches at `quantile`, over `hands` hands.
+
+    Read it as: with probability `1 - quantile`, a stretch of `hands` hands
+    contains a downswing at least this deep. The 0.95 quantile is the one a 5%
+    downswing tolerance is testing against.
+
+    Euros, like everything else internal.
+    """
+    if not 0.0 < quantile < 1.0:
+        raise ValueError(f"quantile must be in (0, 1), got {quantile}")
+    samples, _ = _max_drawdown_samples(config, allocation, hands, paths)
+    return float(np.percentile(samples, quantile * 100.0))
+
+
 def expected_drawdown(
     config: Config, allocation: Allocation, hands: int, paths: int = TABLE_PATHS
 ) -> dict[str, float]:
@@ -122,28 +192,21 @@ def expected_drawdown(
     horizon has to be stated. Deliberately cheap (a few thousand paths) because
     it is called once per table row; the headline simulation slide runs far more.
 
-    Cached by (allocation, hands, paths): the same mixes recur across slides, and
-    re-simulating them would triple the deck build for identical answers.
+    Shares `_max_drawdown_samples`' cache with the downswing tolerance, so a mix
+    the optimiser already tested costs nothing to put on a slide.
     """
-    key = (allocation.counts, config.bankroll_eur, hands, paths,
-           allocation.mean_eur_per_100, allocation.variance_eur_per_100)
-    if key in _DRAWDOWN_CACHE:
-        return _DRAWDOWN_CACHE[key]
-
-    result = simulate(config, allocation, hands=hands, paths=paths, seed=4242)
-    value = {
-        "median": float(np.percentile(result.max_drawdown, 50)),
-        "p90": float(np.percentile(result.max_drawdown, 90)),
-        "p99": float(np.percentile(result.max_drawdown, 99)),
+    samples, ruin_probability = _max_drawdown_samples(config, allocation, hands, paths)
+    return {
+        "median": float(np.percentile(samples, 50)),
+        "p90": float(np.percentile(samples, 90)),
+        "p99": float(np.percentile(samples, 99)),
         # The literal worst of the simulated lifetimes. Reported for interest,
         # NOT used on slides: it is whatever the unluckiest of N paths happened
         # to hit, so it drifts upward as N grows and changes with the seed. The
         # 99th percentile answers the same question and holds still.
-        "max": float(result.max_drawdown.max()),
-        "ruin": result.ruin_probability,
+        "max": float(samples.max()),
+        "ruin": ruin_probability,
     }
-    _DRAWDOWN_CACHE[key] = value
-    return value
 
 
 def simulate(
