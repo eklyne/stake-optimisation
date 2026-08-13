@@ -131,6 +131,52 @@ LADDER = (
 )
 
 
+class TestSeeding(unittest.TestCase):
+    """Reruns reproduce by default, and draw fresh lifetimes on request.
+
+    Both halves matter. A deck whose numbers move on every rebuild cannot be
+    reviewed - a figure that changed would never mean the model changed. But a
+    deck that can ONLY ever show one sample cannot answer "is this an artefact
+    of one lucky draw", which is the question the flag exists for.
+    """
+
+    def setUp(self):
+        self.config = _config()
+        self.allocation = mix.evaluate((6, 6), self.config)
+        sim.FRESH_SEEDS = False
+
+    def tearDown(self):
+        # Module-level flag: leaving it on would silently unpin every test that
+        # runs after this one in the same process.
+        sim.FRESH_SEEDS = False
+        sim._DRAWDOWN_CACHE.clear()
+
+    def _run(self):
+        return sim.simulate(self.config, self.allocation, hands=20_000, paths=200)
+
+    def test_the_default_is_reproducible(self):
+        self.assertTrue(
+            np.array_equal(self._run().final_bankroll, self._run().final_bankroll)
+        )
+
+    def test_fresh_seeds_draw_a_different_sample(self):
+        sim.FRESH_SEEDS = True
+        self.assertFalse(
+            np.array_equal(self._run().final_bankroll, self._run().final_bankroll)
+        )
+
+    def test_an_explicit_seed_still_wins(self):
+        # The tests below pin their own seeds; a flag left on must not drift them.
+        sim.FRESH_SEEDS = True
+        pinned = [
+            sim.simulate(self.config, self.allocation, hands=20_000, paths=200, seed=7)
+            for _ in range(2)
+        ]
+        self.assertTrue(
+            np.array_equal(pinned[0].final_bankroll, pinned[1].final_bankroll)
+        )
+
+
 class TestStepUp(unittest.TestCase):
     """The two moves a player really makes, not an abstract search."""
 

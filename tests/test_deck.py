@@ -84,11 +84,14 @@ class TestDeck(unittest.TestCase):
                     "big blinds", "Where the money goes, in",
                     "one stake and nothing else",
                     "split the tables", "priced in downswings",
+                    "priced both ways",
                     "nearest alternatives", "optimal mix, simulated",
                     "optimal mix, twenty single lifetimes",
                     "two ways up", "bankroll grows",
                     "actually played, simulated",
                     "actually played, twenty single lifetimes",
+                    "Current against optimal - twenty",
+                    "Current against optimal - ten",
                     "earn MORE and risk LESS", "Appendix: method"]
         self.assertEqual(len(titles), len(expected))
         for want, got in zip(expected, titles):

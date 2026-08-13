@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import estimation, export, mix, rates
+from . import estimation, export, mix, rates, sim
 from .analysis import StakeReport, best_affordable, build_reports
 from .config import Config, ConfigError, load_config
 from .ruin import odds_against as _odds
@@ -408,6 +408,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="also build the PowerPoint deck",
     )
+    common.add_argument(
+        "--fresh-sims",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="draw new simulated lifetimes instead of reproducing the last run's",
+    )
 
     parser = argparse.ArgumentParser(
         prog="shotopt",
@@ -443,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     args = _build_parser().parse_args(argv or DEFAULT_ARGV)
     get = lambda name: getattr(args, name, None)  # noqa: E731 - SUPPRESS leaves gaps
+
+    # BEFORE anything is simulated - the first tolerance walk happens inside
+    # build_reports, so a flag applied later would leave half the run on the
+    # fixed seed and half on a fresh one.
+    if get("fresh_sims"):
+        sim.FRESH_SEEDS = True
 
     try:
         config = load_config(get("config"))

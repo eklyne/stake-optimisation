@@ -118,6 +118,36 @@ class SimResult:
     _hours: float = 0.0
 
 
+FRESH_SEEDS = False
+"""Draw a NEW set of lifetimes on this run instead of reproducing the last one.
+
+Off by default, and that default is load-bearing. Every simulated figure in the
+deck - drawdown percentiles, ruin rates, the finishing spread, and the downswing
+measure the tolerance rule VERDICTS are made on - moves a little when the paths
+change. With a fixed seed a rebuild after a chart tweak produces a
+byte-comparable deck, so a number that moved means something in the model moved;
+review comments pinned to a slide still describe the numbers on it; and the mix
+the optimiser picks cannot change because of a coin flip.
+
+Turned on (`run.py ... --fresh-sims`), each run draws its own lifetimes. That is
+the honest way to ask "is this result an artefact of one lucky sample?" - run it
+twice and see what holds still. Within a single run the seed is still fixed, so
+every slide in one deck describes the same simulation.
+"""
+
+_FIXED_SEED = 20260808
+_FIXED_DRAWDOWN_SEED = 4242
+
+
+def _resolve_seed(seed: int | None) -> int | None:
+    """None under `FRESH_SEEDS` (numpy then seeds from OS entropy).
+
+    An explicit `seed=` from a caller wins either way: the tests pin their own
+    seeds and must not start drifting because a CLI flag was left on.
+    """
+    return None if FRESH_SEEDS and seed in (_FIXED_SEED, _FIXED_DRAWDOWN_SEED) else seed
+
+
 _DRAWDOWN_CACHE: dict = {}
 
 
@@ -146,7 +176,8 @@ def _max_drawdown_samples(
     )
     cached = _DRAWDOWN_CACHE.get(key)
     if cached is None:
-        result = simulate(config, allocation, hands=hands, paths=paths, seed=4242)
+        result = simulate(config, allocation, hands=hands, paths=paths,
+                          seed=_FIXED_DRAWDOWN_SEED)
         cached = (result.max_drawdown, result.ruin_probability)
         _DRAWDOWN_CACHE[key] = cached
     return cached
@@ -214,14 +245,18 @@ def simulate(
     allocation: Allocation,
     hands: int = DEFAULT_HANDS,
     paths: int = DEFAULT_PATHS,
-    seed: int | None = 20260808,
+    seed: int | None = _FIXED_SEED,
 ) -> SimResult:
     """Run `paths` independent lifetimes of `hands` hands on one allocation.
 
     Ruin is ABSORBING: once a path's bankroll reaches zero it stops there rather
     than being allowed to recover. Letting busted paths trade their way back
     would quietly understate ruin and flatter every percentile above it.
+
+    The seed defaults to a FIXED one - see `FRESH_SEEDS` for how to draw a new
+    set of lifetimes instead.
     """
+    seed = _resolve_seed(seed)
     if hands < _HANDS_PER_STEP:
         raise ValueError(f"hands must be at least {_HANDS_PER_STEP}, got {hands}")
     if paths < 1:

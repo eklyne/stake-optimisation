@@ -957,77 +957,205 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
 # --------------------------------------------------------------------------- #
 # Slide 7 - the simulation
 # --------------------------------------------------------------------------- #
-def _simulation_slide(prs, layouts, config: Config, result, title, scales=(None, None)):
-    import numpy as np
+# --------------------------------------------------------------------------- #
+# The frontier slides - chart bare, wording as slide text
+# --------------------------------------------------------------------------- #
+NOTES_WIDTH = Inches(3.35)
+"""Width of the text column beside a frontier chart.
 
-    ylim, drawdown_xmax = scales
-    slide = pc.add_image_slide(
-        prs, layouts, title,
-        charts.simulation_figure(result, config, ylim=ylim, drawdown_xmax=drawdown_xmax),
+Wide enough for a mix label ('11x 200NL + 1x 400NL') to sit on one line at 11pt,
+which is what stops the block reading as a paragraph rather than a legend."""
+
+NOTES_GUTTER = Inches(0.22)
+
+
+def _notes_column(slide, blocks, left, top, width, height, heading_pt=11, body_pt=10):
+    """Typeset `charts.frontier_notes` blocks into a textbox.
+
+    Each block's heading takes the colour of the mark it describes, so the link
+    from the words to the picture is carried by colour as well as by wording -
+    the same pairing the on-chart labels used to make by sitting next to the dot.
+    """
+    box = slide.shapes.add_textbox(left, top, width, height)
+    frame = box.text_frame
+    frame.word_wrap = True
+    first = True
+    for heading, colour, lines in blocks:
+        para = frame.paragraphs[0] if first else frame.add_paragraph()
+        para.space_before = Pt(0 if first else 10)
+        first = False
+        run = para.add_run()
+        run.text = heading
+        run.font.size = Pt(heading_pt)
+        run.font.bold = True
+        run.font.color.rgb = pc._to_rgb(colour)
+        for line in lines:
+            body = frame.add_paragraph()
+            run = body.add_run()
+            run.text = line
+            run.font.size = Pt(body_pt)
+            run.font.color.rgb = pc.BLACK
+    return box
+
+
+def _frontier_slide(prs, layouts, title, fig, blocks, dpi=200):
+    """One frontier chart on the left, its wording on the right.
+
+    The chart is drawn with `annotate=False`, so everything the reader needs to
+    name what they are looking at is in this column. Splitting them is the whole
+    point: the callouts used to sit on top of the cloud, and on a busy scatter
+    there is no free space to put three lines of bold text.
+    """
+    slide = prs.slides.add_slide(layouts["Title and Content"])
+    pc.add_title(slide, title)
+
+    chart_width = pc.CONTENT_WIDTH - NOTES_WIDTH - NOTES_GUTTER
+    pic = slide.shapes.add_picture(
+        pc.fig_to_stream(fig, dpi=dpi), pc.CONTENT_LEFT, pc.CONTENT_TOP,
+        height=pc.CONTENT_HEIGHT,
     )
-    median_dd = float(np.percentile(result.max_drawdown, 50))
-    p90_dd = float(np.percentile(result.max_drawdown, 90))
-    median_end = float(np.percentile(result.final_bankroll, 50))
-    over_roll = (
-        " Note the typical worst drawdown EXCEEDS the starting bankroll while only "
-        f"{result.ruin_probability:.2%} go broke: by the time the deep falls arrive, most "
-        "lifetimes are playing with winnings, not with the money they started on."
-        if median_dd > config.bankroll_eur
-        else ""
-    )
-    _footnote(
-        slide,
-        f"{result.allocation.label}. {result.hands:,} hands ({result.hours:,.0f} hours at "
-        f"{config.tables} tables) per lifetime, played at a fixed mix with no move-down rule - "
-        f"an upper bound on risk, not a forecast. Typical worst drawdown "
-        f"{_money(config, median_dd)}, one lifetime in ten worse than "
-        f"{_money(config, p90_dd)}, median finish {_money(config, median_end)}." + over_roll,
+    if pic.width > chart_width:
+        aspect = pic.height / pic.width
+        pic.width = int(chart_width)
+        pic.height = int(chart_width * aspect)
+        pic.top = int(pc.CONTENT_TOP + (pc.CONTENT_HEIGHT - pic.height) / 2)
+    pic.left = int(pc.CONTENT_LEFT + (chart_width - pic.width) / 2)
+
+    _notes_column(
+        slide, blocks,
+        pc.CONTENT_LEFT + chart_width + NOTES_GUTTER, pc.CONTENT_TOP,
+        NOTES_WIDTH, pc.CONTENT_HEIGHT,
     )
     return slide
 
 
-def _random_paths_slide(prs, layouts, config: Config, result, title, best, current,
-                        scales=(None, None)):
-    """The fan chart's companion: twenty individual lifetimes, not bands.
+def _frontier_pair_slide(prs, layouts, config: Config, best, current):
+    """Both frontier charts on one slide, with the wording beneath them.
 
-    Both EV lines appear on BOTH copies of this slide, so the comparison is the
-    same one either way round - the question is always 'where does this mix end
-    up against the other one', and having the reference line move between slides
-    would make the two impossible to read together."""
-    import numpy as np
+    Same decision, priced two ways, in one eyeful. The notes go UNDER the pair
+    rather than beside it: a side column would cost width the two panels need,
+    and half-width panels are where this chart stops being readable first.
+    """
+    slide = prs.slides.add_slide(layouts["Title and Content"])
+    pc.add_title(slide, "The same choice, priced both ways")
 
-    ev_lines = []
+    notes_height = Inches(1.45)
+    chart_height = pc.CONTENT_HEIGHT - notes_height
+    pic = slide.shapes.add_picture(
+        pc.fig_to_stream(charts.frontier_pair_figure(config), dpi=200),
+        pc.CONTENT_LEFT, pc.CONTENT_TOP, height=int(chart_height),
+    )
+    if pic.width > pc.CONTENT_WIDTH:
+        aspect = pic.height / pic.width
+        pic.width = int(pc.CONTENT_WIDTH)
+        pic.height = int(pc.CONTENT_WIDTH * aspect)
+        pic.top = int(pc.CONTENT_TOP + (chart_height - pic.height) / 2)
+    pic.left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - pic.width) / 2)
+
+    # Two columns under the picture: the two mixes side by side, then the limits
+    # and the reading note. Four blocks stacked in one column would run off the
+    # slide at a legible size.
+    blocks = charts.frontier_notes(config, best, current, which="both", compact=True)
+    half = (pc.CONTENT_WIDTH - NOTES_GUTTER) // 2
+    top = pc.CONTENT_TOP + pc.CONTENT_HEIGHT - notes_height
+    mixes = [b for b in blocks if "circle" in b[0]]
+    rest = [b for b in blocks if "circle" not in b[0]]
+    for column, (left, width) in zip(
+        (mixes, rest),
+        ((pc.CONTENT_LEFT, half), (pc.CONTENT_LEFT + half + NOTES_GUTTER, half)),
+    ):
+        _notes_column(
+            slide, column, left, top, width, notes_height,
+            heading_pt=10, body_pt=8.5,
+        )
+    return slide
+
+
+def _ev_lines(config: Config, best, current):
+    """The dotted reference lines, in the deck's one colour convention.
+
+    Both appear on every simulation slide, so the comparison is the same one
+    whichever mix the slide is about - the question is always "where does this end
+    up against the other one", and a reference line that moved between slides
+    would make the pair impossible to read together.
+    """
+    lines = []
     if best is not None:
-        ev_lines.append(("Optimal", best, charts.STATUS_GOOD))
+        lines.append(("Optimal", best, charts.MIX_STYLES["optimal"][0]))
     if current is not None and (best is None or current.counts != best.counts):
-        # Pink, not red: red is the ruin barrier on this very chart, and the mix
-        # you are playing is a reference line, not a hazard.
-        ev_lines.append(("Current", current, charts.COL_CURRENT))
+        lines.append(("Current", current, charts.MIX_STYLES["current"][0]))
+    return lines
 
-    slide = pc.add_image_slide(
+
+def _simulation_slide(prs, layouts, config: Config, result, title, scales=(None, None),
+                      style_key="optimal"):
+    """The fan and the drawdown histogram, bare, with the numbers beside them."""
+    ylim, drawdown_xmax = scales
+    panels = [("", result, style_key)]
+    return _frontier_slide(
         prs, layouts, title,
-        charts.random_paths_figure(result, config, ev_lines, ylim=scales[0]),
+        charts.simulation_figure(
+            result, config, ylim=ylim, drawdown_xmax=drawdown_xmax,
+            style_key=style_key, annotate=False,
+        ),
+        charts.simulation_notes(config, panels) + [(
+            "How deep it digs", charts.INK, [drawdown_note(config)],
+        )],
     )
 
-    hands = result.hands
-    spread = (
-        f"{_money(config, float(np.percentile(result.final_bankroll, 5)))} to "
-        f"{_money(config, float(np.percentile(result.final_bankroll, 95)))}"
+
+def _lifetimes_slide(prs, layouts, config: Config, panels, title, ev_lines,
+                     paths_drawn=20, scales=(None, None)):
+    """One or two panels of single lifetimes, bare, with the numbers beside them.
+
+    One panel gets the notes in a right-hand column like the other chart slides.
+    Two panels get them in a strip underneath, because a side column would cost
+    the width the comparison needs - the same trade the frontier pair makes.
+    """
+    ylim = scales[0]
+    if len(panels) == 1:
+        return _frontier_slide(
+            prs, layouts, title,
+            charts.lifetimes_figure(
+                panels, config, paths_drawn=paths_drawn, ev_lines=ev_lines,
+                ylim=ylim, annotate=False,
+            ),
+            charts.simulation_notes(config, panels, ev_lines),
+        )
+
+    slide = prs.slides.add_slide(layouts["Title and Content"])
+    pc.add_title(slide, title)
+
+    notes_height = Inches(1.45)
+    chart_height = pc.CONTENT_HEIGHT - notes_height
+    fig = charts.lifetimes_figure(
+        panels, config, paths_drawn=paths_drawn, ev_lines=ev_lines, ylim=ylim,
+        annotate=False,
     )
-    ev_note = "  ".join(
-        f"{label} EV finishes at "
-        f"{_money(config, config.bankroll_eur + allocation.mean_eur_per_100 * hands / 100)}."
-        for label, allocation, _ in ev_lines
+    pic = slide.shapes.add_picture(
+        pc.fig_to_stream(fig, dpi=200), pc.CONTENT_LEFT, pc.CONTENT_TOP,
+        height=int(chart_height),
     )
-    _footnote(
-        slide,
-        f"{result.allocation.label}. Twenty of the {result.paths:,} simulated lifetimes, "
-        f"drawn at random rather than picked by where they finish, so the spread is the one "
-        f"the simulation produced. Ninety per cent of lifetimes finish between {spread}, which "
-        f"is the width the EV lines do not show. {ev_note} The EV lines are straight because "
-        f"expectation is linear in hands - nothing here compounds, since the mix is static and "
-        f"the stakes never move. " + drawdown_note(config),
-    )
+    if pic.width > pc.CONTENT_WIDTH:
+        aspect = pic.height / pic.width
+        pic.width = int(pc.CONTENT_WIDTH)
+        pic.height = int(pc.CONTENT_WIDTH * aspect)
+        pic.top = int(pc.CONTENT_TOP + (chart_height - pic.height) / 2)
+    pic.left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - pic.width) / 2)
+
+    blocks = charts.simulation_notes(config, panels, ev_lines, compact=True)
+    half = (pc.CONTENT_WIDTH - NOTES_GUTTER) // 2
+    top = pc.CONTENT_TOP + pc.CONTENT_HEIGHT - notes_height
+    # The two mixes in the left column, the shared explanation in the right - the
+    # same split as the frontier pair, and for the same reason: four blocks
+    # stacked in one column run off the bottom of the slide at a legible size.
+    mixes, rest = blocks[:len(panels)], blocks[len(panels):]
+    for column, (left, width) in zip(
+        (mixes, rest),
+        ((pc.CONTENT_LEFT, half), (pc.CONTENT_LEFT + half + NOTES_GUTTER, half)),
+    ):
+        _notes_column(slide, column, left, top, width, notes_height,
+                      heading_pt=10, body_pt=8.5)
     return slide
 
 
@@ -1420,26 +1548,34 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
     _waterfall_slide(prs, layouts, config, screens, in_euros=False)
     _waterfall_slide(prs, layouts, config, screens, in_euros=True)
     _single_stake_slide(prs, layouts, config, screens, best, current)
-    pc.add_image_slide(
+    _frontier_slide(
         prs, layouts, "Every way to split the tables",
-        charts.allocation_frontier_figure(config),
+        charts.allocation_frontier_figure(config, annotate=False),
+        charts.frontier_notes(config, best, current, which="ruin"),
     )
     # The same trade-off on the other risk axis. Every point it needs has already
     # been simulated by this stage, so it is cheap here even though the chart is
     # the expensive one to build cold.
-    pc.add_image_slide(
+    _frontier_slide(
         prs, layouts, "The same split, priced in downswings",
-        charts.allocation_frontier_downswing_figure(config),
+        charts.allocation_frontier_downswing_figure(config, annotate=False),
+        charts.frontier_notes(config, best, current, which="downswing"),
     )
+    # And both at once - the comparison the two slides above can only be read
+    # across, which means holding the first picture in your head to read the
+    # second. This is the version to present from.
+    _frontier_pair_slide(prs, layouts, config, best, current)
     _configurations_slide(prs, layouts, config, allocations, edge, best, current)
+    ev_lines = _ev_lines(config, best, current)
     if best is not None:
         _simulation_slide(
             prs, layouts, config, run_sim(best),
             "The optimal mix, simulated", scales,
         )
-        _random_paths_slide(
-            prs, layouts, config, run_sim(best),
-            "The optimal mix, twenty single lifetimes", best, current, scales,
+        _lifetimes_slide(
+            prs, layouts, config, [("", run_sim(best), "optimal")],
+            "The optimal mix, twenty single lifetimes", ev_lines,
+            paths_drawn=20, scales=scales,
         )
 
     # ---- 2. Moving up ------------------------------------------------------ #
@@ -1470,11 +1606,28 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
         _simulation_slide(
             prs, layouts, config, run_sim(current),
             "The mix you actually played, simulated", scales,
+            style_key="current",
         )
-        _random_paths_slide(
-            prs, layouts, config, run_sim(current),
-            "The mix you actually played, twenty single lifetimes", best, current, scales,
+        _lifetimes_slide(
+            prs, layouts, config, [("", run_sim(current), "current")],
+            "The mix you actually played, twenty single lifetimes", ev_lines,
+            paths_drawn=20, scales=scales,
         )
+        # The comparison itself, at two densities. Twenty lifetimes a side is the
+        # honest spread; ten is the same picture with the bands still readable
+        # underneath. Both ship so the choice can be made on the slide rather
+        # than in the code - delete whichever loses.
+        comparison = [
+            ("What you are playing now", run_sim(current), "current"),
+            ("The optimal mix", run_sim(best), "optimal"),
+        ]
+        for drawn in (20, 10):
+            _lifetimes_slide(
+                prs, layouts, config, comparison,
+                f"Current against optimal - {'twenty' if drawn == 20 else 'ten'} "
+                f"lifetimes each",
+                ev_lines, paths_drawn=drawn, scales=scales,
+            )
 
     _dominance_slide(prs, layouts, config, allocations, best, current)
     _methodology_slide(prs, layouts, config)

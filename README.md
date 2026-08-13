@@ -201,10 +201,24 @@ deck need `--charts` / `--deck`, which the bare invocation passes for you.
 3. **Waterfall, money** — the same decomposition in cash, where it reads the opposite way
 4. **Frontier** — every mix, the undominated edge, the chosen point
 5. **Frontier, in downswings** — the same choice on the peak-to-trough axis
-6. **Configurations** — the optimum with two safer and two bolder frontier neighbours
-7. **Step up** — the cheapest way into each higher stake, and what it costs
-8. **Simulation** — a million hands, twenty thousand times: drawdowns and outcomes
-9. **Methodology** — what was assumed, and what that does to the numbers
+6. **Both at once** — the two frontier charts side by side, for presenting from
+
+   The deck's copies of these three are drawn *bare*: no title, no subtitle, no
+   direct labels. Every word is typeset beside the picture instead
+   (`charts.frontier_notes`), because the callouts used to land on top of the
+   cloud. The standalone `frontier*.png` keep their labels — nothing else carries
+   them there.
+7. **Configurations** — the optimum with two safer and two bolder frontier neighbours
+8. **Step up** — the cheapest way into each higher stake, and what it costs
+9. **Simulation** — a million hands, twenty thousand times: drawdowns and outcomes
+
+   Per mix: the fan-and-drawdown pair (`simulation_figure`) and the single
+   lifetimes (`lifetimes_figure`, bands + random paths + dotted EV lines). Then
+   the two mixes side by side, at twenty lifetimes a side and at ten — both ship
+   so the density can be chosen on the slide rather than in the code. Green is
+   always the optimum and blue always what you play now (`charts.MIX_STYLES`),
+   here and on the frontier charts.
+10. **Methodology** — what was assumed, and what that does to the numbers
 
 ### Two kinds of downswing
 
@@ -432,7 +446,7 @@ shotopt/
   estimation.py      standard errors, intervals, shaded win rates
   rates.py           bb/100 -> money per hour
   analysis.py        the only module that knows about both config and maths
-  charts.py          the two frontier charts
+  charts.py          the frontier and simulation charts, and the deck's palette
   export.py          CSV copies of the two printed tables
   workbook.py        the deck's numbers as an xlsx, built in the same pass
   sim.py             Monte Carlo over a fixed hand horizon

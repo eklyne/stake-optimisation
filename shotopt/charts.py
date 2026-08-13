@@ -15,11 +15,12 @@ Whichever mode is configured, both are drawn - the second view is worth having
 either way - but only the active rule gets a tolerance line, so the chart never
 implies a constraint that was not applied.
 
-Colours are the reference data-viz values used verbatim rather than re-derived;
-the charts render on the light surface only, since a PNG has no viewer theme to
-respond to. Colour carries in/out of tolerance - a status, not an identity - and is
-always paired with a shape and a direct label, so it never has to be read by hue
-alone.
+Colours come from the deck template's own theme palette (see the ACCENT_*
+constants), so a chart dropped on a slide sits in the same palette as everything
+around it. The charts render on the light surface only, since a PNG has no viewer
+theme to respond to. Colour carries in/out of tolerance - a status, not an
+identity - and is always paired with a shape and, on the standalone PNGs, a direct
+label, so it never has to be read by hue alone.
 
 Money is drawn in the display currency (`config.currency`), converted at the point
 of labelling. The values behind the points stay euros.
@@ -45,8 +46,13 @@ __all__ = [
     "allocation_frontier",
     "allocation_frontier_figure",
     "allocation_frontier_downswing_figure",
+    "frontier_pair_figure",
+    "frontier_notes",
+    "ruin_subtitle",
+    "downswing_subtitle",
     "simulation_figure",
-    "random_paths_figure",
+    "lifetimes_figure",
+    "simulation_notes",
     "simulation_scales",
     "winrate_ci_figure",
 ]
@@ -57,21 +63,81 @@ INK_SECONDARY = "#52514e"
 INK_MUTED = "#7a7972"
 GRID = "#e8e7e4"
 
-SERIES_BLUE = "#2a78d6"
-STATUS_GOOD = "#0ca30c"
-STATUS_CRITICAL = "#d03b3b"
+# ---- The deck template's own theme palette -------------------------------- #
+# Read out of assets/deck_template.pptx (ppt/theme/theme1.xml, a:clrScheme) and
+# pinned here as literals rather than parsed at draw time: the charts have to
+# render with no template on disk (a fresh clone does not have it - it is a
+# personal asset and gitignored), and a chart palette that silently changed with
+# a file the repo does not ship would be worse than one that needs a re-copy.
+# Re-read them if the template's theme is ever edited.
+ACCENT_BLUE = "#24658d"     # accent1
+ACCENT_GREEN = "#388968"    # accent2
+ACCENT_DARK_RED = "#9d0208"  # accent3
+ACCENT_ORANGE = "#e85d04"   # accent4
+ACCENT_PURPLE = "#632a7e"   # accent5
+ACCENT_PINK = "#e05780"     # accent6
+
+SERIES_BLUE = ACCENT_BLUE
+STATUS_GOOD = ACCENT_GREEN
+STATUS_CRITICAL = ACCENT_DARK_RED
 """Reserved for genuine danger - the ruin barrier, and nothing else."""
 
-COL_CURRENT = "#c2478f"
-"""The mix currently played. Pink, deliberately NOT the red used for ruin: the
-current mix is a reference point, not a warning, and drawing it in the danger
-colour made every deck read as though it were an emergency."""
+COL_CURRENT = ACCENT_PINK
+"""The mix currently played, on the SIMULATION charts. Pink, deliberately NOT the
+red used for ruin: the current mix is a reference point, not a warning, and
+drawing it in the danger colour made every deck read as though it were an
+emergency."""
 
-COL_RUIN_LIMIT = "#d03b3b"
-COL_DOWNSWING_LIMIT = "#e08214"
-"""The two risk bars, kept apart by colour as well as by dash pattern. With both
-rules live there are two lines on every frontier chart, and 'which one is which'
-should not require reading the small print at the axis."""
+COL_CURRENT_MARK = "#4c9fd1"
+"""The current mix ON THE FRONTIER CHARTS specifically - a blue circle, the same
+size and shape as the green 'best' circle, so the two read as two values of one
+thing (where you are / where you could be) rather than as two different objects.
+The pink diamond above still marks it on the simulation charts, where there is no
+paired 'best' marker to match.
+
+The theme blue LIGHTENED - same hue and saturation as `ACCENT_BLUE`, lifted from
+0.35 luminance to 0.56. At full strength it and the theme green are both dark
+mid-tones, and at 10pt with a grey ring the two circles were hard to tell apart
+at slide distance. Lightening one separates them by value as well as by hue,
+which is also what makes the pair survive a greyscale print."""
+
+TINT_GREEN = "#7fc0a4"
+TINT_BLUE = "#7db9de"
+"""Pale versions of the two mix colours, for the MASS around a mix rather than
+the mix itself: the frontier it is drawn from, the percentile bands it lives
+inside, the individual lifetimes it averages over.
+
+Both are the accent hue at raised luminance, so a panel of pale-green spaghetti
+under a solid-green EV line reads as one family, and the green panel and the blue
+panel stay tellable apart at a glance."""
+
+COL_FRONTIER = TINT_GREEN
+"""The efficient frontier line - the theme green, tinted about 35% toward white.
+
+Same hue as the chosen point on purpose: the frontier is the SET that point is
+drawn from. Lighter keeps the single dark-green answer the thing the eye lands
+on, and keeps a two-pixel line legible against the grey cloud behind it."""
+
+COL_PATHS = INK_SECONDARY
+"""The individual simulated lifetimes. Darker than `INK_MUTED`, which is the grey
+for things that should recede (the dominated cloud, axis furniture): a lifetime is
+meant to be followed with the eye from left to right, and at 0.6pt the muted grey
+faded out against the band behind it."""
+
+MARK_EDGE = "#6f6e6a"
+"""The outline on the two answer markers. A mid grey, not the surface colour: a
+white ring reads as a gap in the line the marker sits on, and on the frontier
+that gap lands exactly where the eye is trying to follow the curve."""
+
+COL_RUIN_LIMIT = ACCENT_DARK_RED
+COL_DOWNSWING_LIMIT = ACCENT_ORANGE
+"""The two risk bars, told apart by COLOUR ALONE - same weight, same dash.
+
+They used to differ in dash pattern as well, encoding threshold-versus-cut. That
+distinction is real (see `_cut_point`) but it is a property of which chart you are
+looking at, not of the bar, and drawing two dash patterns per panel made the pair
+slide read as four different kinds of line. It is said in words on the slide
+instead."""
 
 RUIN_NEGLIGIBLE = 1e-6
 """Below this, a lifetime risk of ruin is not a decision anyone makes.
@@ -110,8 +176,14 @@ def _style() -> None:
             "figure.facecolor": SURFACE,
             "axes.facecolor": SURFACE,
             "savefig.facecolor": SURFACE,
-            "axes.edgecolor": GRID,
-            "axes.labelcolor": INK_SECONDARY,
+            # Axis furniture is BLACK - spines, ticks, tick labels, axis titles,
+            # legend text. It used to be grey on grey (#52514e text, #e8e7e4
+            # spines), which reads as a faded screenshot once the chart is on a
+            # slide at arm's length. Only the GRID stays pale: it is the one
+            # element that has to sit behind the data without competing with it.
+            "axes.edgecolor": INK,
+            "axes.linewidth": 1.0,
+            "axes.labelcolor": INK,
             "axes.titlecolor": INK,
             "axes.titlesize": 13,
             "axes.titleweight": "bold",
@@ -120,15 +192,17 @@ def _style() -> None:
             "axes.labelsize": 10,
             "axes.spines.top": False,
             "axes.spines.right": False,
-            "xtick.color": INK_SECONDARY,
-            "ytick.color": INK_SECONDARY,
+            "xtick.color": INK,
+            "ytick.color": INK,
+            "xtick.labelcolor": INK,
+            "ytick.labelcolor": INK,
             "xtick.labelsize": 9,
             "ytick.labelsize": 9,
             "grid.color": GRID,
             "grid.linewidth": 0.8,
             "legend.frameon": False,
             "legend.fontsize": 9,
-            "legend.labelcolor": INK_SECONDARY,
+            "legend.labelcolor": INK,
             "font.size": 10,
             "figure.dpi": 150,
         }
@@ -157,27 +231,29 @@ def _finish(fig, path: Path) -> Path:
 
 
 def _tolerance_line(
-    ax, x: float, label: str, colour: str, dotted: bool = False,
-    y: float = 0.02, legend: str | None = None,
+    ax, x: float, label: str, colour: str,
+    y: float = 0.02, legend: str | None = None, annotate: bool = True,
 ) -> None:
     """A limit drawn on the axis, by a rule that was actually applied.
 
-    Dashed for a limit that IS this axis's own quantity, so the line sits exactly
-    where the number does. Dotted for the other rule's limit, which is a cut
-    point rather than a threshold - see `_cut_point`.
-
-    Colour carries WHICH RULE, dash pattern carries whether it is a threshold or
-    a cut, and `legend` puts the same pairing in the key. Three redundant
-    encodings for two lines is not excessive here: on a busy scatter the reader
-    has to be able to tell a ruin bar from a downswing bar at a glance.
+    Every bar is drawn the same way - same weight, same dash - and told apart by
+    COLOUR, with `legend` naming it in the key. Whether a given line is this
+    axis's own threshold or the OTHER rule's cut point (see `_cut_point`) is said
+    in the legend wording ('bites here') and in the slide's notes, not in the dash
+    pattern: that is a fact about which chart you are looking at, and encoding it
+    in the stroke made a two-panel slide look like it had four kinds of line on it.
 
     `y` staggers the labels: with both rules in play the two lines can be close
     together, and their labels point INWARD at each other across the gap.
+
+    `annotate=False` draws the line without its on-chart label, for the deck,
+    where the same wording is carried by the legend and the slide's own text.
     """
     ax.axvline(
-        x, color=colour, linewidth=1.6, linestyle=":" if dotted else "--",
-        label=legend,
+        x, color=colour, linewidth=1.6, linestyle="--", label=legend,
     )
+    if not annotate:
+        return
     # A limit hard against the left edge - which is where the stricter of two
     # rules lands - would otherwise have its label written off the canvas.
     near_left = _axis_fraction(ax, x) < 0.30
@@ -248,7 +324,7 @@ def _axis_fraction(ax, x: float) -> float:
     return float(ax.transAxes.inverted().transform(ax.transData.transform((x, y)))[0])
 
 
-def _mark_best(ax, x: float, best, config: Config) -> None:
+def _mark_best(ax, x: float, best, config: Config, annotate: bool = True) -> None:
     """The chosen mix, marked identically on both frontier charts.
 
     Same shape, colour and label wording on each, so the two read as one pair and
@@ -257,14 +333,20 @@ def _mark_best(ax, x: float, best, config: Config) -> None:
     `x` arrives already in whatever units its axis is drawn in; the y value is
     converted here, because it is always money and always comes off the
     allocation in euros.
+
+    `annotate=False` leaves the marker but drops its block of text - the deck
+    prints the same numbers beside the chart, where they cannot land on top of
+    the cloud (see `frontier_notes`).
     """
     y = config.currency.from_eur(best.eur_per_hour)
     ax.plot(
         [x], [y],
-        marker="o", markersize=13, color=STATUS_GOOD,
-        markeredgecolor=SURFACE, markeredgewidth=2, linestyle="none",
+        marker="o", markersize=10, color=STATUS_GOOD,
+        markeredgecolor=MARK_EDGE, markeredgewidth=1.0, linestyle="none",
         label="Best inside tolerance",
     )
+    if not annotate:
+        return
     # The chosen mix often sits at the far left - it is the safe end of the
     # frontier - and a right-aligned label there runs off the canvas. Flip it to
     # the other side of the marker when it is close to the edge. Measured through
@@ -284,23 +366,30 @@ def _mark_best(ax, x: float, best, config: Config) -> None:
     )
 
 
-def _mark_current(ax, x: float, current, config: Config) -> None:
+def _mark_current(ax, x: float, current, config: Config, annotate: bool = True) -> None:
     """The mix actually being played, so the gap to the frontier is visible rather
-    than described. Vertical distance to the blue line is EV left on the table;
-    horizontal distance is risk taken for nothing."""
+    than described. Vertical distance to the frontier is EV left on the table;
+    horizontal distance is risk taken for nothing.
+
+    Same circle, same size as `_mark_best` - only the colour differs. The two
+    markers are the same KIND of thing (a mix, at a point on this trade-off), and
+    giving them different shapes made them read as different quantities.
+    """
     y = config.currency.from_eur(current.eur_per_hour)
     ax.plot(
         [x], [y],
-        marker="D", markersize=11, color=COL_CURRENT,
-        markeredgecolor=SURFACE, markeredgewidth=2, linestyle="none",
+        marker="o", markersize=10, color=COL_CURRENT_MARK,
+        markeredgecolor=MARK_EDGE, markeredgewidth=1.0, linestyle="none",
         label="What you are playing now",
     )
+    if not annotate:
+        return
     ax.annotate(
         f"current: {_hourly(current.eur_per_hour, config)}  |  "
         f"ruin {_odds(current.risk_of_ruin)}",
         xy=(x, y),
         xytext=(10, -14), textcoords="offset points",
-        color=COL_CURRENT, fontsize=9.5, fontweight="bold",
+        color=COL_CURRENT_MARK, fontsize=9.5, fontweight="bold",
     )
 
 
@@ -354,7 +443,8 @@ def _one_in(probability: float) -> str:
     return f"1 in {odds:,.0f}"
 
 
-def _ruin_cannot_rank_figure(fig, ax, config: Config, allocations, best, current):
+def _ruin_cannot_rank_draw(ax, config: Config, allocations, best, current,
+                           annotate=True, legend=True):
     """What the ruin chart becomes when no mix carries meaningful ruin.
 
     Replaces the scatter with the earnings range and a plain statement, because
@@ -399,31 +489,35 @@ def _ruin_cannot_rank_figure(fig, ax, config: Config, allocations, best, current
     # Enough headroom that the note below clears the marker row entirely. The two
     # marker lines run the full height of the bars, so anything sharing that band
     # gets a vertical rule drawn through it.
-    ax.margins(y=0.34)
+    ax.margins(y=0.34)  # headroom for the note; the floor is pinned below
+    ax.set_ylim(bottom=0)
     ax.grid(axis="y", alpha=0.9)
     ax.set_axisbelow(True)
-    ax.set_title(f"Every way to split {config.tables} tables across your stakes")
-    _subtitle(
-        ax,
+    if annotate:
+        ax.set_title(f"Every way to split {config.tables} tables across your stakes")
+        _subtitle(ax, _cannot_rank_subtitle(allocations, worst))
+        # Top LEFT: the chosen mix is the best-earning one, so it and its marker
+        # sit at the right-hand end of this axis by construction, and a note over
+        # there lands on top of them.
+        ax.annotate(
+            f"On a {config.currency.fmt(config.bankroll_eur)} bankroll ruin is not the "
+            f"binding constraint,\nso this is the earnings spread instead. What separates "
+            f"these mixes\nis how deep a downswing they put you through - the next chart.",
+            xy=(0.02, 0.97), xycoords="axes fraction", ha="left", va="top",
+            fontsize=9.5, color=INK_SECONDARY,
+        )
+    if legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)
+
+
+def _cannot_rank_subtitle(allocations, worst: float) -> str:
+    return (
         f"Ruin cannot rank these: all {len(allocations):,} sit under "
-        f"{RUIN_NEGLIGIBLE:g}, the riskiest at {_one_in(worst)}.",
+        f"{RUIN_NEGLIGIBLE:g}, the riskiest at {_one_in(worst)}."
     )
-    # Top LEFT: the chosen mix is the best-earning one, so it and its marker sit
-    # at the right-hand end of this axis by construction, and a note over there
-    # lands on top of them.
-    ax.annotate(
-        f"On a {config.currency.fmt(config.bankroll_eur)} bankroll ruin is not the "
-        f"binding constraint,\nso this is the earnings spread instead. What separates "
-        f"these mixes\nis how deep a downswing they put you through - the next chart.",
-        xy=(0.02, 0.97), xycoords="axes fraction", ha="left", va="top",
-        fontsize=9.5, color=INK_SECONDARY,
-    )
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)
-    fig.tight_layout()
-    return fig
 
 
-def allocation_frontier_figure(config: Config):
+def allocation_frontier_figure(config: Config, annotate: bool = True):
     """Every way to split the tables, plotted as EUR/hour against risk.
 
     The cloud is every allocation; the line through its upper-left edge is the
@@ -433,10 +527,27 @@ def allocation_frontier_figure(config: Config):
 
     Returns the figure so the deck can embed it as vector-quality output rather
     than re-reading a rendered PNG.
+
+    `annotate=False` strips the title, subtitle and every direct label, leaving
+    the marks, the axes and the key. That is the DECK's version: the slide has
+    its own title and prints the same wording as text beside the picture, so
+    on-chart copy is duplication that also sits on top of the data. The standalone
+    PNG keeps its labels, since nothing else carries them there.
     """
     _style()
     fig, ax = plt.subplots(figsize=(9.5, 6))
+    _draw_allocation_frontier(ax, config, annotate=annotate)
+    fig.tight_layout()
+    return fig
 
+
+def _draw_allocation_frontier(
+    ax, config: Config, annotate: bool = True, legend: bool = True,
+) -> None:
+    """Draw the ruin frontier onto an existing axes - see the figure wrapper.
+
+    `legend=False` leaves the marks labelled but draws no key, for the two-panel
+    figure, which carries one shared key for both (`_pair_legend`)."""
     allocations = mix.all_allocations(config)
     edge = mix.frontier(allocations)
     best = mix.best_allocation(allocations, config)
@@ -457,7 +568,9 @@ def allocation_frontier_figure(config: Config):
     # an axis invites reading a difference between two numbers that are both
     # zero for every human purpose.
     if allocations and max(a.risk_of_ruin for a in allocations) < RUIN_NEGLIGIBLE:
-        return _ruin_cannot_rank_figure(fig, ax, config, allocations, best, current)
+        return _ruin_cannot_rank_draw(
+            ax, config, allocations, best, current, annotate=annotate, legend=legend
+        )
 
     # Follows the data rather than a constant: twelve decades below the riskiest
     # mix on this ladder. See FLOOR_DECADES.
@@ -466,13 +579,13 @@ def allocation_frontier_figure(config: Config):
     ax.scatter(
         [max(a.risk_of_ruin, floor) for a in allocations],
         [money(a.eur_per_hour) for a in allocations],
-        s=14, color=INK_MUTED, alpha=0.28, linewidths=0, label="Every possible mix",
+        s=5, color=INK_MUTED, alpha=0.32, linewidths=0, label="Every possible mix",
     )
     ax.plot(
         [max(a.risk_of_ruin, floor) for a in edge],
         [money(a.eur_per_hour) for a in edge],
-        color=SERIES_BLUE, linewidth=2.0, marker="o", markersize=5,
-        markeredgecolor=SURFACE, markeredgewidth=1, label="Efficient frontier",
+        color=COL_FRONTIER, linewidth=2.0, marker="o", markersize=4.5,
+        markeredgewidth=0, label="Efficient frontier",
     )
 
     # Scale and limits BEFORE the markers: `_mark_best` decides which side of the
@@ -490,6 +603,7 @@ def allocation_frontier_figure(config: Config):
             f"ruin {_odds(config.ruin_tolerance)}",
             COL_RUIN_LIMIT,
             legend=f"Ruin bar ({_odds(config.ruin_tolerance)})",
+            annotate=annotate,
         )
     if config.risk_mode in ("downswing", "both"):
         cut = _downswing_cut_on_ruin_axis(config, edge, floor)
@@ -497,16 +611,19 @@ def allocation_frontier_figure(config: Config):
             _tolerance_line(
                 ax, cut,
                 f"downswing {config.currency.fmt(config.downswing_amount_eur)}",
-                COL_DOWNSWING_LIMIT, dotted=True, y=0.10,
+                COL_DOWNSWING_LIMIT, y=0.10,
                 legend=f"Downswing bar bites here "
                        f"({config.currency.fmt(config.downswing_amount_eur)})",
+                annotate=annotate,
             )
 
     if best is not None:
-        _mark_best(ax, max(best.risk_of_ruin, floor), best, config)
+        _mark_best(ax, max(best.risk_of_ruin, floor), best, config, annotate=annotate)
 
     if current is not None:
-        _mark_current(ax, max(current.risk_of_ruin, floor), current, config)
+        _mark_current(
+            ax, max(current.risk_of_ruin, floor), current, config, annotate=annotate
+        )
     # Any stack remaining on the left edge is the floor, not a coincidence: those
     # mixes carry a risk too small to tell apart or to care about.
     ax.set_xlabel(
@@ -515,18 +632,24 @@ def allocation_frontier_figure(config: Config):
     ax.set_ylabel(config.currency.axis("/ hour"))
     ax.grid(alpha=0.9)
     ax.set_axisbelow(True)
-    ax.set_title(f"Every way to split {config.tables} tables across your stakes")
-    _subtitle(ax, {
-        "ruin": "Take the highest point left of the dashed line. The frontier is the "
+    if annotate:
+        ax.set_title(f"Every way to split {config.tables} tables across your stakes")
+        _subtitle(ax, ruin_subtitle(config))
+    if legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)
+
+
+def ruin_subtitle(config: Config) -> str:
+    """How to read the ruin chart. Public because the deck prints it as slide
+    text instead of drawing it into the picture."""
+    return {
+        "ruin": "Take the highest point left of the red line. The frontier is the "
                 "menu; everything below it is dominated.",
         "downswing": "Ruin is shown for reference - the downswing rule chose the "
-                     "answer. Dotted: where that rule bites.",
-        "both": "Dashed: the ruin bar. Dotted: where the downswing bar bites. The "
+                     "answer. The orange line is where that rule bites.",
+        "both": "Red is the ruin bar, orange is where the downswing bar bites. The "
                 "answer must clear both, so the leftmost line binds.",
-    }[config.risk_mode])
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=3)
-    fig.tight_layout()
-    return fig
+    }[config.risk_mode]
 
 
 def allocation_frontier(config: Config, path: Path) -> Path:
@@ -537,7 +660,7 @@ def allocation_frontier(config: Config, path: Path) -> Path:
     return path
 
 
-def allocation_frontier_downswing_figure(config: Config):
+def allocation_frontier_downswing_figure(config: Config, annotate: bool = True):
     """The same trade-off, priced in the downswing you would actually live through.
 
     x is the peak-to-trough fall this mix reaches at probability p within the
@@ -552,11 +675,21 @@ def allocation_frontier_downswing_figure(config: Config):
     with anything to say. The line through them is the subset nothing else beats on
     both axes - a frontier over the candidates, which is why it is labelled that
     way rather than as THE frontier.
-    """
-    from . import sim, tolerance as _tolerance
 
+    `annotate=False` is the deck's version - see `allocation_frontier_figure`.
+    """
     _style()
     fig, ax = plt.subplots(figsize=(9.5, 6))
+    _draw_downswing_frontier(ax, config, annotate=annotate)
+    fig.tight_layout()
+    return fig
+
+
+def _draw_downswing_frontier(
+    ax, config: Config, annotate: bool = True, legend: bool = True,
+) -> None:
+    """Draw the downswing frontier onto an existing axes - see the wrapper."""
+    from . import tolerance as _tolerance
 
     rule = _tolerance.DownswingTolerance()
     allocations = mix.all_allocations(config)
@@ -585,7 +718,7 @@ def allocation_frontier_downswing_figure(config: Config):
             xy=(0.5, 0.5), xycoords="axes fraction", ha="center", va="center",
             color=INK_SECONDARY, fontsize=11,
         )
-        return fig
+        return
 
     points.sort(key=lambda pair: pair[0])
     # Both axes are money, so both are DRAWN in the display currency. Plotting
@@ -597,7 +730,7 @@ def allocation_frontier_downswing_figure(config: Config):
     ax.scatter(
         [money(value) for value, _ in points],
         [money(allocation.eur_per_hour) for _, allocation in points],
-        s=26, color=INK_MUTED, alpha=0.45, linewidths=0, label="Frontier candidates",
+        s=10, color=INK_MUTED, alpha=0.5, linewidths=0, label="Frontier candidates",
     )
 
     # Undominated on THIS axis: cheapest downswing for the money, walking left to
@@ -610,8 +743,8 @@ def allocation_frontier_downswing_figure(config: Config):
     ax.plot(
         [money(value) for value, _ in edge],
         [money(allocation.eur_per_hour) for _, allocation in edge],
-        color=SERIES_BLUE, linewidth=2.0, marker="o", markersize=5,
-        markeredgecolor=SURFACE, markeredgewidth=1, label="Efficient over these",
+        color=COL_FRONTIER, linewidth=2.0, marker="o", markersize=4.5,
+        markeredgewidth=0, label="Efficient over these",
     )
 
     # Margins BEFORE anything that measures the axis. `_tolerance_line` and
@@ -620,6 +753,11 @@ def allocation_frontier_downswing_figure(config: Config):
     # different answer from the one the reader ends up seeing.
     ax.margins(x=0.10, y=0.15)
     ax.autoscale_view()
+    # A downswing of less than nothing is not a thing, so the axis starts at zero
+    # rather than at whatever the left margin worked out to. Set AFTER the margin
+    # call (which would otherwise re-open the gap) and BEFORE anything that
+    # measures the axis to place a label.
+    ax.set_xlim(left=0)
 
     if config.risk_mode in ("downswing", "both"):
         _tolerance_line(
@@ -629,6 +767,7 @@ def allocation_frontier_downswing_figure(config: Config):
             COL_DOWNSWING_LIMIT,
             legend=f"Downswing bar "
                    f"({config.currency.fmt(config.downswing_amount_eur)})",
+            annotate=annotate,
         )
     if config.risk_mode in ("ruin", "both"):
         # Free, unlike the mirror image on the ruin chart: risk of ruin is
@@ -643,30 +782,192 @@ def allocation_frontier_downswing_figure(config: Config):
             _tolerance_line(
                 ax, cut,
                 f"ruin {_odds(config.ruin_tolerance)}",
-                COL_RUIN_LIMIT, dotted=True, y=0.10,
+                COL_RUIN_LIMIT, y=0.10,
                 legend=f"Ruin bar bites here ({_odds(config.ruin_tolerance)})",
+                annotate=annotate,
             )
 
     if best is not None and best.counts in measured:
-        _mark_best(ax, measured[best.counts], best, config)
+        _mark_best(ax, measured[best.counts], best, config, annotate=annotate)
     if current is not None and current.counts in measured:
-        _mark_current(ax, measured[current.counts], current, config)
+        _mark_current(ax, measured[current.counts], current, config, annotate=annotate)
 
     ax.xaxis.set_major_formatter(FuncFormatter(_thousands))
     ax.set_xlabel(_tolerance.axis_label("downswing", config))
     ax.set_ylabel(config.currency.axis("/ hour"))
     ax.grid(alpha=0.9)
     ax.set_axisbelow(True)
-    ax.set_title("The same choice, priced in downswings rather than ruin")
-    _subtitle(
-        ax,
+    if annotate:
+        ax.set_title("The same choice, priced in downswings rather than ruin")
+        _subtitle(ax, downswing_subtitle(config))
+    if legend:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=4)
+
+
+def downswing_subtitle(config: Config) -> str:
+    """What the downswing axis measures. Public for the same reason as
+    `ruin_subtitle`: the deck prints it rather than drawing it."""
+    from . import sim
+
+    return (
         f"How deep a fall from a high each mix runs, {config.downswing_probability:.0%} "
         f"of the time, over {config.downswing_hands:,} hands "
-        f"({sim.TOLERANCE_PATHS:,} simulated lifetimes each).",
+        f"({sim.TOLERANCE_PATHS:,} simulated lifetimes each)."
     )
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncols=4)
-    fig.tight_layout()
+
+
+PAIR_FIGSIZE = (14.4, 5.0)
+"""Canvas for the two-panel slide - two 7.2 x 5in panels.
+
+Sized to the HOLE IN THE SLIDE, not to the panels: the deck gives this picture
+12.48 x 4.36in once the title and the notes strip are taken out, an aspect of
+about 2.87, and a canvas cut to that shape fills it exactly. Any squarer canvas
+scales to the height and then leaves the sides empty, which is the usual way a
+side-by-side ends up looking like an accident. Change one and check the other -
+the two numbers are a pair (`deck._frontier_pair_slide`)."""
+
+
+def _pair_legend(fig, config: Config) -> None:
+    """ONE key for both panels, drawn from proxy artists.
+
+    The panels' own legends cannot be used here. Each is centred under its own
+    axes at three or four columns, which is already at the limit of a full-width
+    chart and overflows a half-width one - the right-hand key ran off the canvas
+    and the left-hand one collided with it. They also say the same thing twice:
+    the same six marks appear on both panels, under two sets of wording that
+    differ only in phrasing ('Efficient frontier' / 'Efficient over these').
+
+    So the pair gets a curated key instead. Both bars are drawn the same way on
+    the panels too, so the entries here match them exactly.
+    """
+    from matplotlib.lines import Line2D
+
+    def mark(colour, size):
+        return dict(
+            marker="o", linestyle="none", color=colour, markersize=size,
+            markeredgecolor=MARK_EDGE, markeredgewidth=1.0,
+        )
+
+    entries = [
+        Line2D([], [], marker="o", linestyle="none", color=INK_MUTED, alpha=0.5,
+               markersize=4, label="Every mix scored"),
+        Line2D([], [], color=COL_FRONTIER, linewidth=2.0, marker="o", markersize=4.5,
+               markeredgewidth=0, label="Efficient frontier"),
+        Line2D([], [], **mark(STATUS_GOOD, 9), label="Best inside tolerance"),
+        Line2D([], [], **mark(COL_CURRENT_MARK, 9), label="What you are playing now"),
+    ]
+    if config.risk_mode in ("ruin", "both"):
+        entries.append(Line2D(
+            [], [], color=COL_RUIN_LIMIT, linewidth=1.6, linestyle="--",
+            label=f"Ruin bar ({_odds(config.ruin_tolerance)})",
+        ))
+    if config.risk_mode in ("downswing", "both"):
+        entries.append(Line2D(
+            [], [], color=COL_DOWNSWING_LIMIT, linewidth=1.6, linestyle="--",
+            label=f"Downswing bar ({config.currency.fmt(config.downswing_amount_eur)})",
+        ))
+    fig.legend(
+        handles=entries, loc="lower center", ncols=len(entries),
+        frameon=False, fontsize=9,
+    )
+
+
+def frontier_pair_figure(config: Config, figsize=PAIR_FIGSIZE, annotate: bool = False):
+    """Both frontier charts on one canvas, ruin left and downswing right.
+
+    The same decision priced two ways, which is a comparison the reader can only
+    make properly when both are in the eye at once - across a slide boundary they
+    have to remember the first picture to read the second.
+
+    Unannotated by DEFAULT, unlike the single-chart figures: half-width panels
+    have nowhere to put a three-line callout that is not on top of the data, so
+    this one exists to be paired with slide text (`frontier_notes`).
+    """
+    _style()
+    fig, (left, right) = plt.subplots(1, 2, figsize=figsize)
+    _draw_allocation_frontier(left, config, annotate=annotate, legend=False)
+    _draw_downswing_frontier(right, config, annotate=annotate, legend=False)
+    # Panel headings even in the unannotated version: with two pictures side by
+    # side, "which one am I looking at" cannot be answered by the slide title.
+    # The reading instructions still live in the slide text.
+    left.set_title("Priced in risk of ruin")
+    right.set_title("Priced in downswings")
+    # Room reserved for the shared key BEFORE it is drawn: a figure legend is not
+    # part of the layout, so tight_layout would otherwise fill the space and the
+    # key would land on the axis labels.
+    fig.tight_layout(rect=(0, 0.09, 1, 1))
+    _pair_legend(fig, config)
     return fig
+
+
+def frontier_notes(
+    config: Config, best=None, current=None, which: str = "both",
+    compact: bool = False,
+):
+    """The text that used to be written onto the frontier charts.
+
+    Returns `(heading, colour, [lines])` blocks for the deck to typeset beside
+    the picture. Built here rather than in `deck.py` so the wording and the
+    colours stay tied to the marks they describe - a legend that drifts from its
+    chart is worse than no legend.
+
+    `best`/`current` are optional only so a caller that has not computed them can
+    still get the limit and reading blocks; passing the same objects the chart was
+    drawn from is the point.
+
+    `which` selects which chart(s) the reading instructions describe - 'ruin',
+    'downswing', or 'both' for the two-panel slide.
+
+    `compact` folds each mix onto two lines, for the two-panel slide where the
+    notes sit in a strip under the picture rather than in a full-height column.
+    """
+    money = config.currency
+    blocks: list[tuple[str, str, list[str]]] = []
+
+    def mix_lines(allocation) -> list[str]:
+        money_line = (
+            f"{_hourly(allocation.eur_per_hour, config)}  |  "
+            f"{money.fmt(allocation.exposure_eur)} on tables"
+        )
+        ruin_line = f"risk of ruin {_odds(allocation.risk_of_ruin)}"
+        if compact:
+            return [allocation.label, f"{money_line}  |  {ruin_line}"]
+        return [allocation.label, money_line, ruin_line]
+
+    if best is not None:
+        blocks.append(
+            ("Best inside tolerance (green circle)", STATUS_GOOD, mix_lines(best))
+        )
+    if current is not None:
+        lines = mix_lines(current)
+        if best is not None:
+            gap = config.currency.from_eur(best.eur_per_hour - current.eur_per_hour)
+            lines.append(f"{gap:+,.0f} {money.code}/hr left on the table")
+        blocks.append(("What you are playing now (blue circle)", COL_CURRENT_MARK, lines))
+
+    limits = []
+    if config.risk_mode in ("ruin", "both"):
+        limits.append(
+            f"Ruin bar: {_odds(config.ruin_tolerance)} - the RED line. On the ruin "
+            "chart it is the tolerance itself; on the downswing chart it is where "
+            "that tolerance starts rejecting mixes."
+        )
+    if config.risk_mode in ("downswing", "both"):
+        limits.append(
+            f"Downswing bar: {money.fmt(config.downswing_amount_eur)} over "
+            f"{config.downswing_hands:,} hands at {config.downswing_probability:.0%} "
+            "- the ORANGE line, read the same way round."
+        )
+    if limits:
+        blocks.append(("The limits", COL_RUIN_LIMIT, limits))
+
+    reading = []
+    if which in ("ruin", "both"):
+        reading.append(ruin_subtitle(config))
+    if which in ("downswing", "both"):
+        reading.append(downswing_subtitle(config))
+    blocks.append(("How to read it", INK_SECONDARY, reading))
+    return blocks
 
 
 def allocation_frontier_downswing(config: Config, path: Path) -> Path:
@@ -681,7 +982,7 @@ RANDOM_PATHS = 20
 """Lifetimes drawn on the spaghetti chart. Enough to show the spread, few
 enough that a single line can still be followed across the page."""
 
-_RANDOM_PATH_SEED = 90210
+_RANDOM_PATH_SEED = 20260813
 """Fixed, so the same twenty lifetimes appear every rebuild. A chart that
 reshuffles on every run invites the reader to rerun until they like it."""
 
@@ -923,7 +1224,8 @@ def simulation_scales(results, config: Config, allocations=()):
     )
 
 
-def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
+def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None,
+                      style_key: str = "optimal", annotate: bool = True):
     """Two panels: where the bankroll goes, and how deep it digs on the way.
 
     Left is a fan of percentile bands rather than a spaghetti of paths - with
@@ -934,6 +1236,11 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
     Right is the distribution of the worst peak-to-trough fall per lifetime,
     which is the number with no closed form and therefore the reason this
     simulation exists at all.
+
+    `style_key` picks the mix palette (`MIX_STYLES`), so the optimum is green and
+    the mix in play is blue on every chart in the deck. `annotate=False` strips
+    the titles and the direct labels and adds a shared key instead - the deck
+    prints the numbers beside the picture.
     """
     import numpy as np
 
@@ -949,21 +1256,21 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
     # Ruin then has a place on the axis - the barrier at minus the bankroll -
     # instead of being the invisible point where the total happens to reach nil.
     money = config.currency.from_eur
+    line_colour, mass = MIX_STYLES[style_key]
     ruin_level = money(-config.bankroll_eur)
     paths = money(result.checkpoint_bankroll - config.bankroll_eur)
     drawdowns = money(result.max_drawdown)
 
     hands = result.checkpoint_hands
-    bands = [(5, 95, 0.14), (25, 75, 0.24)]
-    for low, high, alpha in bands:
-        left.fill_between(
-            hands,
-            np.percentile(paths, low, axis=0),
-            np.percentile(paths, high, axis=0),
-            color=SERIES_BLUE, alpha=alpha, linewidth=0,
-        )
+    for low, high, alpha in ((5, 95, 0.10), (25, 75, 0.16)):
+        lo = np.percentile(paths, low, axis=0)
+        hi = np.percentile(paths, high, axis=0)
+        left.fill_between(hands, lo, hi, color=mass, alpha=alpha, linewidth=0)
+        for edge in (lo, hi):
+            left.plot(hands, edge, color=line_colour, linewidth=0.9,
+                      linestyle="--", alpha=0.85)
     median = np.percentile(paths, 50, axis=0)
-    left.plot(hands, median, color=SERIES_BLUE, linewidth=2.2, label="Median")
+    left.plot(hands, median, color=line_colour, linewidth=2.2, label="Median")
 
     # Sample paths chosen by where they FINISH - the lifetimes that ended at the
     # 5th, 20th, 40th, 60th, 80th and 95th percentile. Drawing a random handful
@@ -974,23 +1281,25 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
     picks = [order[min(int(p / 100 * len(order)), len(order) - 1)]
              for p in (5, 20, 40, 60, 80, 95)]
     for row in picks:
-        left.plot(hands, paths[row], color=INK_MUTED, linewidth=0.8, alpha=0.6)
+        left.plot(hands, paths[row], color=COL_PATHS, linewidth=0.7, alpha=0.75)
 
     # Break-even, and the barrier. They are a whole bankroll apart now, so both
     # labels can sit at the left without colliding.
-    left.axhline(0, color=INK_MUTED, linewidth=1.2, linestyle="--")
-    left.annotate("break even", xy=(1.0, 0), xycoords=("axes fraction", "data"),
-                  xytext=(-4, 6), textcoords="offset points", ha="right",
-                  fontsize=9, color=INK_MUTED)
-    left.axhline(ruin_level, color=STATUS_CRITICAL, linewidth=1.4, linestyle=":")
-    left.annotate(
-        f"ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll "
-        f"({result.ruin_probability:.2%} of lifetimes)",
-        xy=(0, ruin_level), xytext=(4, 6), textcoords="offset points",
-        fontsize=9, color=STATUS_CRITICAL, fontweight="bold",
-    )
+    left.axhline(0, color=INK_MUTED, linewidth=1.2)
+    left.axhline(ruin_level, color=STATUS_CRITICAL, linewidth=1.4, linestyle="--")
+    if annotate:
+        left.annotate("break even", xy=(1.0, 0), xycoords=("axes fraction", "data"),
+                      xytext=(-4, 6), textcoords="offset points", ha="right",
+                      fontsize=9, color=INK_MUTED)
+        left.annotate(
+            f"ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll "
+            f"({result.ruin_probability:.2%} of lifetimes)",
+            xy=(0, ruin_level), xytext=(4, 6), textcoords="offset points",
+            fontsize=9, color=STATUS_CRITICAL, fontweight="bold",
+        )
     left.set_xlabel("Hands played")
-    left.set_ylabel(f"Profit from start ({config.currency.code})")
+    left.set_xlim(0, hands[-1])
+    left.set_ylabel(f"Net income ({config.currency.code})")
     left.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
     # Six-figure bankrolls make "150,000" labels that crowd the axis; k-abbreviated
     # they stay readable and match the drawdown panel beside them.
@@ -1000,10 +1309,12 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
     if ylim is not None:
         left.set_ylim(money(ylim[0]), money(ylim[1]))
     left.set_title("What you end up making")
-    # Kept SHORT deliberately: the two subtitles sit side by side at the top of
-    # their panels, and a long one on the left runs straight across the divider
-    # into the right panel's text. Neither should exceed about sixty characters.
-    _subtitle(left, "5-95 and 25-75 percentile bands, over six sampled lifetimes.")
+    if annotate:
+        # Kept SHORT deliberately: the two subtitles sit side by side at the top
+        # of their panels, and a long one on the left runs straight across the
+        # divider into the right panel's text. Neither should exceed about sixty
+        # characters.
+        _subtitle(left, "5-95 and 25-75 percentile bands, over six sampled lifetimes.")
 
     # Clip the tail: a handful of extreme lifetimes otherwise stretch the axis to
     # four times the interesting range and squash the whole distribution left.
@@ -1012,14 +1323,16 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
         else float(np.percentile(drawdowns, 99.5))
     )
     right.hist(drawdowns, bins=60, range=(0, x_max),
-               color=SERIES_BLUE, alpha=0.85, linewidth=0)
+               color=mass, alpha=0.95, linewidth=0)
     for pct, style, height in ((50, "-", 0.97), (90, ":", 0.86)):
         value = float(np.percentile(drawdowns, pct))
         right.axvline(value, color=INK, linewidth=1.4, linestyle=style)
-        right.annotate(f"{pct}th: {config.currency.code} {value:,.0f}", xy=(value, height),
-                       xycoords=("data", "axes fraction"), xytext=(6, 0),
-                       textcoords="offset points", fontsize=9, color=INK,
-                       fontweight="bold", va="top")
+        if annotate:
+            right.annotate(f"{pct}th: {config.currency.code} {value:,.0f}",
+                           xy=(value, height),
+                           xycoords=("data", "axes fraction"), xytext=(6, 0),
+                           textcoords="offset points", fontsize=9, color=INK,
+                           fontweight="bold", va="top")
     # Only when the roll is actually on this axis. On a bankroll comfortably
     # bigger than any drawdown the line falls outside the x limits, and matplotlib
     # keeps drawing the LABEL - which then floats in empty space to the right of
@@ -1029,12 +1342,13 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
     # it now draws the same quantity as a negative profit.
     roll_depth = money(config.bankroll_eur)
     if roll_depth <= x_max:
-        right.axvline(roll_depth, color=STATUS_CRITICAL, linewidth=1.4, linestyle=":")
-        right.annotate("your whole roll", xy=(roll_depth, 0.50),
-                       xycoords=("data", "axes fraction"), xytext=(-6, 0),
-                       textcoords="offset points", ha="right", fontsize=9,
-                       color=STATUS_CRITICAL, fontweight="bold")
-    else:
+        right.axvline(roll_depth, color=STATUS_CRITICAL, linewidth=1.4, linestyle="--")
+        if annotate:
+            right.annotate("your whole roll", xy=(roll_depth, 0.50),
+                           xycoords=("data", "axes fraction"), xytext=(-6, 0),
+                           textcoords="offset points", ha="right", fontsize=9,
+                           color=STATUS_CRITICAL, fontweight="bold")
+    elif annotate:
         # Top LEFT: the distribution starts well right of zero (a mix that never
         # dug at all is not a thing), so the left shoulder of this panel is the
         # one reliably empty corner. The right is where the tail and the
@@ -1052,86 +1366,278 @@ def simulation_figure(result, config: Config, ylim=None, drawdown_xmax=None):
     right.xaxis.set_major_formatter(FuncFormatter(_thousands))
     right.set_xlabel(f"Worst peak-to-trough fall ({config.currency.code})")
     right.set_ylabel("Lifetimes")
+    right.set_ylim(bottom=0)
     right.grid(axis="y", alpha=0.9)
     right.set_axisbelow(True)
     right.set_title("How deep it digs")
-    _subtitle(right, "One value per lifetime: its worst drawdown.")
-
-    fig.tight_layout()
+    if annotate:
+        _subtitle(right, "One value per lifetime: its worst drawdown.")
+        fig.tight_layout()
+    else:
+        fig.tight_layout(rect=(0, 0.09, 1, 1))
+        _fan_legend(fig, config, line_colour, mass, roll_depth <= x_max)
     return fig
 
 
-def random_paths_figure(result, config: Config, ev_lines=(), ylim=None):
-    """Twenty lifetimes, drawn individually, with the EV lines over the top.
+def _fan_legend(fig, config: Config, line_colour, mass, roll_on_axis: bool) -> None:
+    """One key for both panels of the bare fan chart.
 
-    The companion to the fan chart, answering the complaint that a percentile
-    band is not a thing anyone experiences. These are twenty lifetimes picked at
-    random - NOT by where they finish, which is how the fan chart chooses its
-    handful - so the spread is the honest one the simulation produced.
+    The panels show different things, so the entries run left panel first and then
+    right - which is also the order the eye reads them in. The 50th/90th drawdown
+    rules are black on both panels because they are read off the axis rather than
+    identified by colour."""
+    from matplotlib.lines import Line2D
 
-    `ev_lines` is a sequence of (label, allocation, colour): each is drawn as a
-    straight dotted line at bankroll + mean x hands, the path the mix would take
-    with the variance switched off. Straight because expectation is linear in
-    hands - the curvature people expect is a property of compounding, and
-    nothing here compounds: the mix is static and the stakes never move.
+    entries = [
+        Line2D([], [], color=line_colour, linewidth=0.9, linestyle="--",
+               label="Middle 50% of lifetimes"),
+        Line2D([], [], color=line_colour, linewidth=0.9, linestyle="--", alpha=0.55,
+               label="5th-95th percentile"),
+        Line2D([], [], color=line_colour, linewidth=2.2, label="Median lifetime"),
+        Line2D([], [], color=COL_PATHS, linewidth=0.7, label="Six sampled lifetimes"),
+        Line2D([], [], color=INK_MUTED, linewidth=1.2, label="Break even"),
+        Line2D([], [], color=STATUS_CRITICAL, linewidth=1.4, linestyle="--",
+               label=("Ruin barrier / your whole roll" if roll_on_axis
+                      else f"Ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll")),
+        Line2D([], [], color=INK, linewidth=1.4, label="Median worst fall"),
+        Line2D([], [], color=INK, linewidth=1.4, linestyle=":",
+               label="90th-percentile worst fall"),
+    ]
+    fig.legend(handles=entries, loc="lower center", ncols=4, frameon=False,
+               fontsize=9)
+
+
+MIX_STYLES = {
+    "optimal": (STATUS_GOOD, TINT_GREEN),
+    "current": (COL_CURRENT_MARK, TINT_BLUE),
+}
+"""(line colour, mass colour) per mix, shared by every simulation chart.
+
+The same green means "the optimum" and the same blue means "what you play now" on
+every slide in the deck, including the frontier charts' two circles. A reader who
+has learnt the pair once does not have to re-learn it per picture."""
+
+
+def lifetimes_figure(
+    panels, config: Config, paths_drawn: int = 20, ev_lines=(), ylim=None,
+    bands: bool = True, annotate: bool = True, figsize=None,
+):
+    """Individual simulated lifetimes, one panel per mix.
+
+    `panels` is a sequence of (heading, result, style_key) - one entry for a
+    single-mix slide, two for the current-versus-optimal comparison. Two panels
+    share one y-axis by construction (`ylim` comes from `simulation_scales`),
+    because the entire point of putting them side by side is that the heights can
+    be compared directly.
+
+    Three layers, deliberately in this order:
+
+    * the percentile BANDS (5-95 and 25-75), the shape of the distribution;
+    * `paths_drawn` single LIFETIMES, sampled at random - NOT picked by where they
+      finish - so the spread is the one the simulation produced. They are what a
+      band cannot show: nobody experiences a percentile, and a real year is jagged;
+    * the EV lines, dotted, one per mix in `ev_lines`. Straight, because
+      expectation is linear in hands: the curve people expect is compounding, and
+      nothing here compounds - the mix is static and the stakes never move.
+
+    Both EV lines are drawn on BOTH panels, so the comparison reads the same way
+    round whichever panel the eye starts on.
+
+    No median line: for a sum of many independent hands the median and the mean
+    sit on top of each other, so it would be a second line tracing the dotted one
+    and adding nothing but ink.
     """
     import numpy as np
 
     _style()
-    fig, ax = plt.subplots(figsize=(11.5, 5.2))
+    if figsize is None:
+        figsize = (11.5, 5.2) if len(panels) == 1 else PAIR_FIGSIZE
+    fig, axes = plt.subplots(
+        1, len(panels), figsize=figsize, sharey=True, squeeze=False,
+    )
 
-    # Profit from the starting roll, matching the fan chart beside it - see
-    # `simulation_figure` for why the axis is not the bankroll itself.
     money = config.currency.from_eur
     ruin_level = money(-config.bankroll_eur)
-    paths = money(result.checkpoint_bankroll - config.bankroll_eur)
 
-    hands = result.checkpoint_hands
-    rng = np.random.default_rng(_RANDOM_PATH_SEED)
-    count = min(RANDOM_PATHS, paths.shape[0])
-    rows = rng.choice(paths.shape[0], size=count, replace=False)
-    for row in rows:
-        ax.plot(hands, paths[row], color=SERIES_BLUE, linewidth=0.9, alpha=0.55)
+    for ax, (heading, result, style_key) in zip(axes[0], panels):
+        line_colour, mass = MIX_STYLES[style_key]
+        paths = money(result.checkpoint_bankroll - config.bankroll_eur)
+        hands = result.checkpoint_hands
 
-    ax.axhline(0, color=INK_MUTED, linewidth=1.2, linestyle="--")
-    ax.annotate("break even", xy=(1.0, 0), xycoords=("axes fraction", "data"),
-                xytext=(-4, 6), textcoords="offset points", ha="right",
-                fontsize=9, color=INK_MUTED)
-    ax.axhline(ruin_level, color=STATUS_CRITICAL, linewidth=1.4, linestyle=":")
-    ax.annotate(
-        f"ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll "
-        f"({result.ruin_probability:.2%} of lifetimes)",
-        xy=(0, ruin_level), xytext=(4, 6), textcoords="offset points",
-        fontsize=9, color=STATUS_CRITICAL, fontweight="bold",
-    )
+        # The interval EDGES are the thing being read, so they are drawn as
+        # lines - thin, dashed, in the mix colour - with the fill left as a wash
+        # behind them. A fill alone has no boundary to point at, and under a
+        # screenful of lifetimes its edge is exactly where it gets lost.
+        if bands:
+            for low, high, alpha in ((5, 95, 0.10), (25, 75, 0.16)):
+                lo = np.percentile(paths, low, axis=0)
+                hi = np.percentile(paths, high, axis=0)
+                ax.fill_between(hands, lo, hi, color=mass, alpha=alpha, linewidth=0)
+                for edge in (lo, hi):
+                    ax.plot(hands, edge, color=line_colour, linewidth=0.9,
+                            linestyle="--", alpha=0.85)
 
-    # Drawn last so they sit on top of the spaghetti, and labelled directly at
-    # the right-hand end rather than in a legend the eye has to travel to.
-    for label, allocation, colour in ev_lines:
-        line = money(allocation.mean_eur_per_100 * (hands / 100.0))
-        ax.plot(hands, line, color=colour, linewidth=2.0, linestyle=":")
-        ax.annotate(f"{label} EV  {config.currency.code} {line[-1]:,.0f}",
+        # Grey, and thinner than anything else on the chart: twenty lifetimes are
+        # TEXTURE - what the spread feels like one year at a time - not twenty
+        # series to be told apart. In the mix colour they competed with the
+        # interval edges and the EV line, which are the two things being read.
+        rng = np.random.default_rng(_RANDOM_PATH_SEED)
+        count = min(paths_drawn, paths.shape[0])
+        for row in rng.choice(paths.shape[0], size=count, replace=False):
+            ax.plot(hands, paths[row], color=COL_PATHS, linewidth=0.7, alpha=0.75)
+
+        # Break-even and the barrier, drawn the same way on every panel - same
+        # weight and dash as the frontier charts' limit lines, for the same
+        # reason: one kind of stroke means "a line someone drew", and colour says
+        # which one.
+        ax.axhline(0, color=INK_MUTED, linewidth=1.2)
+        ax.axhline(ruin_level, color=STATUS_CRITICAL, linewidth=1.4, linestyle="--")
+
+        # Last, so they sit on top of the spaghetti rather than under it.
+        for label, allocation, colour in ev_lines:
+            line = money(allocation.mean_eur_per_100 * (hands / 100.0))
+            ax.plot(hands, line, color=colour, linewidth=2.2, linestyle="--")
+            if annotate:
+                ax.annotate(
+                    f"{label} EV  {config.currency.code} {line[-1]:,.0f}",
                     xy=(hands[-1], line[-1]), xytext=(-4, 8),
                     textcoords="offset points", ha="right", fontsize=9,
-                    fontweight="bold", color=colour)
+                    fontweight="bold", color=colour,
+                )
 
-    ax.set_xlabel("Hands played")
-    ax.set_ylabel(f"Profit from start ({config.currency.code})")
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
-    ax.grid(axis="y", alpha=0.9)
-    ax.set_axisbelow(True)
-    if ylim is not None:
-        ax.set_ylim(money(ylim[0]), money(ylim[1]))
-    ax.set_title("Where the bankroll ends up - twenty single lifetimes")
-    _subtitle(
-        ax,
-        f"{count} lifetimes drawn at random from the {result.paths:,} simulated. "
-        "Dotted: the EV of each mix, variance switched off.",
-    )
+        if annotate:
+            ax.annotate("break even", xy=(1.0, 0), xycoords=("axes fraction", "data"),
+                        xytext=(-4, 6), textcoords="offset points", ha="right",
+                        fontsize=9, color=INK_MUTED)
+            ax.annotate(
+                f"ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll "
+                f"({result.ruin_probability:.2%} of lifetimes)",
+                xy=(0, ruin_level), xytext=(4, 6), textcoords="offset points",
+                fontsize=9, color=STATUS_CRITICAL, fontweight="bold",
+            )
 
-    fig.tight_layout()
+        ax.set_xlabel("Hands played")
+        # Hand zero is the left edge - see the note on zero-based axes.
+        ax.set_xlim(0, hands[-1])
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
+        ax.grid(axis="y", alpha=0.9)
+        ax.set_axisbelow(True)
+        if ylim is not None:
+            ax.set_ylim(money(ylim[0]), money(ylim[1]))
+        # A heading per panel even when nothing else is written on the chart: with
+        # two of them, "which mix is this" cannot be answered by the slide title.
+        # On a single panel the title does answer it, so the caller passes "".
+        if heading:
+            ax.set_title(heading)
+
+    axes[0][0].set_ylabel(f"Net income ({config.currency.code})")
+    axes[0][0].yaxis.set_major_formatter(FuncFormatter(_thousands))
+
+    if annotate:
+        fig.tight_layout()
+    else:
+        # Two rows of key, so more bottom margin than the frontier pair's one row.
+        fig.tight_layout(rect=(0, 0.14, 1, 1))
+        _lifetimes_legend(fig, config, ev_lines, bands=bands)
     return fig
+
+
+def _lifetimes_legend(fig, config: Config, ev_lines, bands: bool = True) -> None:
+    """One key under the panels - see `_pair_legend` for why it is not per-axes.
+
+    The band and lifetime entries are drawn in the OPTIMAL palette, because those
+    elements take their colour from whichever panel they are in; the panel
+    headings and the EV entries carry the mix identity. One pair of band entries
+    per panel would say the same thing twice.
+    """
+    from matplotlib.lines import Line2D
+
+    entries = [
+        Line2D([], [], color=COL_PATHS, linewidth=0.7,
+               label="Single lifetimes, drawn at random"),
+    ]
+    if bands:
+        entries += [
+            Line2D([], [], color=STATUS_GOOD, linewidth=0.9, linestyle="--",
+                   label="Middle 50% of lifetimes"),
+            Line2D([], [], color=STATUS_GOOD, linewidth=0.9, linestyle="--",
+                   alpha=0.55, label="5th-95th percentile"),
+        ]
+    entries += [
+        Line2D([], [], color=colour, linewidth=2.2, linestyle="--",
+               label=f"{label} EV (variance off)")
+        for label, _, colour in ev_lines
+    ]
+    entries += [
+        Line2D([], [], color=INK_MUTED, linewidth=1.2, label="Break even"),
+        Line2D([], [], color=STATUS_CRITICAL, linewidth=1.4, linestyle="--",
+               label=f"Ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll"),
+    ]
+    # FOUR columns, not one row of seven. Seven entries this wordy overflow the
+    # canvas and matplotlib clips the last one silently - the ruin entry lost its
+    # closing word before this was capped. Two rows of four also matches the fan
+    # chart's key, so the two simulation slides look like siblings.
+    fig.legend(handles=entries, loc="lower center", ncols=4, frameon=False,
+               fontsize=9)
+
+
+def simulation_notes(config: Config, panels, ev_lines=(), compact: bool = False):
+    """The wording that used to be written onto the simulation charts.
+
+    Same contract as `frontier_notes`: `(heading, colour, [lines])` blocks for the
+    deck to typeset beside or beneath the picture, each heading in the colour of
+    the thing it describes.
+
+    `panels` is the same sequence `lifetimes_figure` takes, so a slide cannot
+    describe a mix it did not draw.
+    """
+    import numpy as np
+
+    money = config.currency
+    blocks: list[tuple[str, str, list[str]]] = []
+
+    for heading, result, style_key in panels:
+        line_colour, _ = MIX_STYLES[style_key]
+        finals = result.final_bankroll - config.bankroll_eur
+        low, high = (float(np.percentile(finals, p)) for p in (5, 95))
+        median_dd = float(np.percentile(result.max_drawdown, 50))
+        if compact:
+            lines = [
+                result.allocation.label,
+                f"90% finish {money.fmt(low)} to {money.fmt(high)}  |  "
+                f"typical worst fall {money.fmt(median_dd)}  |  "
+                f"ruin {result.ruin_probability:.2%}",
+            ]
+        else:
+            lines = [
+                result.allocation.label,
+                f"90% of lifetimes finish between {money.fmt(low)} and "
+                f"{money.fmt(high)}",
+                f"typical worst drawdown {money.fmt(median_dd)}",
+                f"{result.ruin_probability:.2%} of lifetimes lose the roll",
+            ]
+        blocks.append((heading or result.allocation.label, line_colour, lines))
+
+    if ev_lines:
+        hands = panels[0][1].hands
+        blocks.append(("The dotted lines", INK, [
+            "  ".join(
+                f"{label} EV finishes at "
+                f"{money.fmt(allocation.mean_eur_per_100 * hands / 100)}."
+                for label, allocation, _ in ev_lines
+            ),
+            "Straight because expectation is linear in hands - nothing here "
+            "compounds, since the mix is static and the stakes never move.",
+        ]))
+
+    blocks.append(("How to read it", INK, [
+        f"{panels[0][1].hands:,} hands per lifetime "
+        f"({panels[0][1].hours:,.0f} hours at {config.tables} tables), "
+        f"{panels[0][1].paths:,} lifetimes simulated.",
+        "The mix is held fixed with no move-down rule, so every risk figure here "
+        "is an upper bound rather than a forecast.",
+    ]))
+    return blocks
 
 
 def write_all(config: Config, directory: Path) -> list[Path]:

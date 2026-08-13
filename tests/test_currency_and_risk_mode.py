@@ -198,6 +198,79 @@ class TestChartsAreDrawnInDisplayUnits(unittest.TestCase):
         self.assertAlmostEqual(max(xs_gbp), max(xs_eur) / 1.16, places=6)
 
 
+class TestUnannotatedFrontier(unittest.TestCase):
+    """The deck's version of the frontier charts carries no text of its own.
+
+    Every word moved to the slide (`charts.frontier_notes`), so anything still
+    written into the axes is duplication sitting on top of the data. The marks
+    themselves must survive - a chart stripped of its callouts AND its points
+    would pass a naive "no text" check while showing nothing.
+    """
+
+    def _both(self):
+        """Both rules live and a current mix to mark - so every element the
+        annotations used to describe is actually on the chart."""
+        return _downswing(
+            4000.0,
+            risk_mode="both",
+            stakes=(
+                Stake("50NL", 0.5, 7.0, 95.0, current_hands=20_000),
+                Stake("100NL", 1.0, 5.5, 92.0, current_hands=10_000),
+                Stake("200NL", 2.0, 3.5, 90.0, current_hands=5_000),
+            ),
+        )
+
+    def _bare(self, figure):
+        ax = figure.axes[0]
+        return [t.get_text() for t in ax.texts] + [ax.get_title()]
+
+    def test_neither_chart_draws_a_label_or_a_title(self):
+        from shotopt import charts
+
+        config = self._both()
+        for figure in (
+            charts.allocation_frontier_figure(config, annotate=False),
+            charts.allocation_frontier_downswing_figure(config, annotate=False),
+        ):
+            self.assertEqual([t for t in self._bare(figure) if t], [])
+
+    def test_the_marks_are_still_there(self):
+        from shotopt import charts
+
+        ax = charts.allocation_frontier_figure(self._both(), annotate=False).axes[0]
+        # Cloud, frontier, both limit lines, best and current.
+        self.assertTrue(ax.collections)
+        self.assertGreaterEqual(len(ax.get_lines()), 5)
+        # The current mix is the same circle as the best one, in blue.
+        markers = {
+            (line.get_marker(), line.get_markersize(), line.get_color())
+            for line in ax.get_lines() if line.get_linestyle() == "None"
+        }
+        self.assertIn(("o", 10, charts.STATUS_GOOD), markers)
+        self.assertIn(("o", 10, charts.COL_CURRENT_MARK), markers)
+
+    def test_the_labels_are_still_available_as_text(self):
+        from shotopt import charts
+
+        config = self._both()
+        allocations = mix.all_allocations(config)
+        best = mix.best_allocation(allocations, config)
+        blocks = charts.frontier_notes(config, best, mix.current_allocation(config))
+        headings = [heading for heading, _, _ in blocks]
+        self.assertTrue(any("Best inside tolerance" in h for h in headings))
+        self.assertTrue(any("playing now" in h for h in headings))
+        self.assertIn(best.label, [line for _, _, lines in blocks for line in lines])
+
+    def test_the_pair_figure_holds_both_charts(self):
+        from shotopt import charts
+
+        figure = charts.frontier_pair_figure(self._both())
+        self.assertEqual(len(figure.axes), 2)
+        left, right = figure.axes
+        self.assertIn("Risk of ruin", left.get_xlabel())
+        self.assertIn("downswing", right.get_xlabel().lower())
+
+
 class TestDegenerateRuinAxis(unittest.TestCase):
     """A big enough bankroll drives every mix under the ruin floor.
 
@@ -587,13 +660,15 @@ class TestBothMode(unittest.TestCase):
             charts.allocation_frontier_figure(config),
             charts.allocation_frontier_downswing_figure(config),
         ):
-            styles = {
-                line.get_linestyle() for line in figure.axes[0].get_lines()
-                if line.get_linestyle() in ("--", ":")
+            # Both bars are drawn identically and told apart by COLOUR, so that
+            # is what has to be on the chart - one line in each limit colour.
+            colours = {
+                line.get_color() for line in figure.axes[0].get_lines()
+                if line.get_linestyle() == "--"
             }
             self.assertEqual(
-                styles, {"--", ":"},
-                "expected one dashed limit and one dotted cut on every chart",
+                colours, {charts.COL_RUIN_LIMIT, charts.COL_DOWNSWING_LIMIT},
+                "expected a ruin bar and a downswing bar on every chart",
             )
 
 
@@ -663,7 +738,7 @@ class TestOddsAgainst(unittest.TestCase):
         self.assertEqual(ruin.odds_against(1.0), "certain")
 
 
-class TestSimulationAxisIsProfit(unittest.TestCase):
+class TestSimulationAxisIsNetIncome(unittest.TestCase):
     def test_zero_is_the_start_and_ruin_is_below_it(self):
         from shotopt import charts, sim
 
@@ -676,14 +751,14 @@ class TestSimulationAxisIsProfit(unittest.TestCase):
         self.assertLess(low, -config.bankroll_eur)
         self.assertGreater(high, 0)
 
-    def test_the_axis_is_labelled_as_profit(self):
+    def test_the_axis_is_labelled_as_net_income(self):
         from shotopt import charts, sim
 
         config = _config(currency=GBP, timescale_hands=200_000, sim_paths=400)
         allocation = mix.evaluate((2, 2, 2), config)
         result = sim.simulate(config, allocation, hands=200_000, paths=400)
         figure = charts.simulation_figure(result, config)
-        self.assertIn("Profit", figure.axes[0].get_ylabel())
+        self.assertIn("Net income", figure.axes[0].get_ylabel())
         text = " ".join(t.get_text() for t in figure.axes[0].texts)
         self.assertIn("ruin", text)
         self.assertNotIn("broke", text)
