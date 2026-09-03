@@ -295,5 +295,59 @@ class TestCurrentAllocation(unittest.TestCase):
         self.assertEqual(current.counts[3], 0)
 
 
+class TestCurrentAllocations(unittest.TestCase):
+    """Several named periods, each apportioned on its OWN hands."""
+
+    def _config(self, *rows):
+        return _config(
+            tables=12,
+            stakes=tuple(
+                Stake(s.name, s.bb_eur, s.winrate_bb100, s.stdev_bb100,
+                      current_splits=split)
+                for s, split in zip(LADDER, rows)
+            ),
+        )
+
+    def test_one_mix_per_split_in_the_order_declared(self):
+        config = self._config(
+            (("July", 23_082), ("August", 15_183)),
+            (("July", 11_052), ("August", 10_688)),
+            (("July", 13_760), ("August", 13_860)),
+            (("July", 4_632), ("August", 5_805)),
+        )
+        splits = mix.current_allocations(config)
+        self.assertEqual([label for label, _ in splits], ["July", "August"])
+        # Each is apportioned from its own month, not from the pooled total: the
+        # second month moved a table off the bottom rung and onto 200NL.
+        self.assertEqual(splits[0][1].counts, (5, 3, 3, 1))
+        self.assertEqual(splits[1][1].counts, (4, 3, 4, 1))
+        # And the last one is what `current_allocation` calls "now".
+        self.assertEqual(mix.current_allocation(config).counts, splits[-1][1].counts)
+
+    def test_a_bare_current_hands_still_gives_exactly_one_split(self):
+        config = _config(
+            stakes=tuple(
+                Stake(s.name, s.bb_eur, s.winrate_bb100, s.stdev_bb100, current_hands=h)
+                for s, h in zip(LADDER, (10_000, 10_000, 0, 0))
+            ),
+        )
+        splits = mix.current_allocations(config)
+        self.assertEqual(len(splits), 1)
+        self.assertEqual(splits[0][1].counts, mix.current_allocation(config).counts)
+
+    def test_a_split_with_no_play_in_it_is_dropped(self):
+        # Not drawn at the origin: a month nobody played is not a mix.
+        config = self._config(
+            (("July", 10_000), ("August", 0)),
+            (("July", 10_000), ("August", 0)),
+            (("July", 0), ("August", 0)),
+            (("July", 0), ("August", 0)),
+        )
+        self.assertEqual([label for label, _ in mix.current_allocations(config)], ["July"])
+
+    def test_none_at_all_gives_no_splits(self):
+        self.assertEqual(mix.current_allocations(_config(stakes=LADDER)), ())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,7 +40,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE  # noqa: E402
 from pptx.util import Inches, Pt  # noqa: E402
 
 from . import charts, estimation, mix, pptx_common as pc, progress, rates, sim  # noqa: E402
-from .config import Config  # noqa: E402
+from .config import Config, DEFAULT_SPLIT_LABEL  # noqa: E402
 
 __all__ = ["build"]
 
@@ -151,19 +151,42 @@ def timescale_label(config: Config) -> str:
     return f"{hands:,}"
 
 
-CURRENT_LABEL = "CURRENT (July)"
-"""What the played mix is called wherever it appears. One constant, because it
-now appears on four tables and a caption that disagreed with the others would
-read as a different mix."""
+def current_label(name: str) -> str:
+    """What a played split is called wherever it appears - 'CURRENT (August)'.
+
+    One function, because the name appears on four tables and a caption that
+    disagreed with the others would read as a different mix. An unnamed single
+    split is just 'CURRENT': there is no second period to tell it apart from, so
+    the placeholder name would be noise."""
+    if name == DEFAULT_SPLIT_LABEL:
+        return "CURRENT"
+    return f"CURRENT ({name})"
 
 
-def _benchmark_row(current):
-    """The played mix, as the first row of an allocation table.
+def _benchmark_rows(currents):
+    """The played mixes, as the opening rows of an allocation table.
 
-    Every table opens with it so each one answers the same question - what does
+    Every table opens with them so each one answers the same question - what does
     this change, against what is actually being done today - without the reader
-    holding a number in their head from an earlier slide."""
-    return (current, "what you play now", pc.COL_ORANGE, True)
+    holding a number in their head from an earlier slide.
+
+    Several splits are listed oldest first, and only the LAST is 'now': it is the
+    one the rest of the deck argues against, so it keeps the orange highlight and
+    the bold, and the earlier periods sit behind it in plain grey as history.
+    """
+    rows = []
+    for index, (name, allocation) in enumerate(currents):
+        latest = index == len(currents) - 1
+        note = (
+            "what you play now" if latest or len(currents) <= 1
+            else f"what you played in {name}"
+        )
+        rows.append((
+            allocation, note,
+            pc.COL_ORANGE if latest else pc.TABLE_LABEL_BG,
+            latest,
+        ))
+    return rows
 
 
 def horizon_ev(config: Config, allocation) -> float:
@@ -251,6 +274,7 @@ def _run_parameters_slide(prs, layouts, config: Config):
             pc.set_cell(cell, text, font_size=9, bold=(index == 0), font_colour=pc.BLACK)
 
     # ---- the per-stake inputs, every column config.toml can carry ---------- #
+    splits = config.current_split_labels or ("played",)
     stake_cols = [
         ("Stake", 0.75),
         ("bb\nEUR", 0.70),
@@ -258,7 +282,9 @@ def _run_parameters_slide(prs, layouts, config: Config):
         ("SD\nbb/100", 0.80),
         ("Rake\nbb/100", 0.85),
         ("Sample\nhands", 1.00),
-        ("Hands\nplayed", 1.00),
+        # One column per period actually played, so a reader can see the split
+        # MOVE - which is the whole reason for carrying more than one.
+        *((f"Hands\n{name}", 1.00) for name in splits),
         ("Max\ntables", 0.85),
     ]
     stake_width = Inches(sum(w for _, w in stake_cols))
@@ -287,7 +313,8 @@ def _run_parameters_slide(prs, layouts, config: Config):
             f"{stake.stdev_bb100:.1f}",
             f"{stake.rake_bb100:.3f}" if stake.rake_bb100 is not None else "-",
             f"{stake.hands:,}" if stake.hands else "-",
-            f"{stake.current_hands:,.0f}" if stake.current_hands is not None else "-",
+            *(f"{stake.hands_in_split(name):,.0f}" if stake.current_splits else "-"
+              for name in splits),
             f"{stake.max_tables}" if stake.max_tables is not None else "no limit",
         ]
         for index, value in enumerate(values):
@@ -300,8 +327,9 @@ def _run_parameters_slide(prs, layouts, config: Config):
         "These are the values the run actually used, including any command-line override, "
         "so they cannot disagree with the numbers on the slides that follow. 'Sample hands' "
         "is the volume the win rate is measured over and only drives the confidence interval. "
-        "'Hands played' is the recent split used to reconstruct the current configuration, and "
-        "is read as a ratio only. Standard deviation is an assumption at every stake, not a "
+        "The 'Hands' columns are the recent splits used to reconstruct the played "
+        "configurations, and are read as ratios only - the last is the one the rest of the "
+        "deck argues against. Standard deviation is an assumption at every stake, not a "
         "measurement.",
     )
     return slide
@@ -532,7 +560,7 @@ def _waterfall_slide(prs, layouts, config: Config, screens, in_euros: bool):
 # --------------------------------------------------------------------------- #
 # Slide 5 - the chosen configuration and its neighbours
 # --------------------------------------------------------------------------- #
-def _configurations_slide(prs, layouts, config: Config, allocations, edge, best, current):
+def _configurations_slide(prs, layouts, config: Config, allocations, edge, best, currents):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "The chosen mix, and its nearest alternatives")
 
@@ -547,7 +575,7 @@ def _configurations_slide(prs, layouts, config: Config, allocations, edge, best,
         window = edge[low:index + 3]
         chosen = best.counts
 
-    rows_data = [] if current is None else [_benchmark_row(current)]
+    rows_data = _benchmark_rows(currents)
     for allocation in window:
         is_best = chosen is not None and allocation.counts == chosen
         if is_best:
@@ -640,7 +668,7 @@ def _allocation_table(slide, config: Config, rows_data, top):
     return table
 
 
-def _single_stake_slide(prs, layouts, config: Config, screens, best, current):
+def _single_stake_slide(prs, layouts, config: Config, screens, best, currents):
     """Every stake played on its own, in the same format as the mix table.
 
     The baseline the whole exercise argues against: put all twelve tables on one
@@ -650,7 +678,7 @@ def _single_stake_slide(prs, layouts, config: Config, screens, best, current):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "If you played one stake and nothing else")
 
-    rows_data = [] if current is None else [_benchmark_row(current)]
+    rows_data = _benchmark_rows(currents)
     for index, screen in enumerate(screens):
         counts = tuple(config.tables if i == index else 0 for i in range(len(config.stakes)))
         allocation = mix.evaluate(counts, config)
@@ -682,11 +710,11 @@ def _single_stake_slide(prs, layouts, config: Config, screens, best, current):
 # The price of stepping up
 # --------------------------------------------------------------------------- #
 def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data, top,
-                      current=None):
-    """Shared table: the played mix, the highlighted baseline, then variants.
+                      currents=()):
+    """Shared table: the played mixes, the highlighted baseline, then variants.
 
     Deltas are always measured against the BASELINE (the optimum), including on
-    the played-mix row - one reference point per table. The played mix is a
+    the played-mix rows - one reference point per table. A played mix is a
     benchmark to read against, not a second origin.
     """
     code = config.currency.code
@@ -706,7 +734,7 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
     ])
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
-    lead = 2 if current is not None else 1  # header, plus the benchmark row
+    lead = 1 + len(currents)  # header, plus one row per period actually played
     shape = slide.shapes.add_table(
         len(rows_data) + lead + 1, len(columns), left, top,
         table_width, Inches(0.45 + 0.40 * (len(rows_data) + lead)),
@@ -733,21 +761,24 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
         gap = config.currency.from_eur(allocation.eur_per_hour - baseline.eur_per_hour)
         return f"{gap:+,.0f}"
 
-    if current is not None:
+    for index, (name, current) in enumerate(currents):
+        latest = index == len(currents) - 1
         current_row = [
-            CURRENT_LABEL, current.label, _plain(config, current.eur_per_hour),
+            current_label(name), current.label, _plain(config, current.eur_per_hour),
             delta(current),
             _plain(config, current.exposure_eur),
             _plain(config, horizon_ev(config, current)),
             f"{current.risk_of_ruin:.2%}",
             f"{current.risk_of_ruin / max(baseline.risk_of_ruin, 1e-12):.1f}x",
-            *swings(current), "what you play now",
+            *swings(current),
+            "what you play now" if latest else f"what you played in {name}",
         ]
         for i, value in enumerate(current_row):
-            cell = table.cell(1, i)
+            cell = table.cell(1 + index, i)
             pc._zero_cell_margins(cell)
-            pc.set_cell(cell, value, font_size=10, bold=True,
-                        bg_colour=pc.COL_ORANGE, wrap=True)
+            pc.set_cell(cell, value, font_size=10, bold=latest,
+                        bg_colour=pc.COL_ORANGE if latest else pc.TABLE_LABEL_BG,
+                        wrap=True)
 
     base_row = [
         baseline_note, baseline.label, _plain(config, baseline.eur_per_hour), "-",
@@ -785,7 +816,7 @@ def _comparison_table(slide, config: Config, baseline, baseline_note, rows_data,
     return table
 
 
-def _step_up_slide(prs, layouts, config: Config, best, options, current):
+def _step_up_slide(prs, layouts, config: Config, best, options, currents=()):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "The two ways up, and what each costs")
 
@@ -808,7 +839,7 @@ def _step_up_slide(prs, layouts, config: Config, best, options, current):
         for option in options
     ]
     _comparison_table(slide, config, best, "OPTIMAL (baseline)", rows,
-                      pc.CONTENT_TOP + Inches(0.55), current=current)
+                      pc.CONTENT_TOP + Inches(0.55), currents=currents)
     used = [i for i, count in enumerate(best.counts) if count]
     shot = config.stakes[max(used) + 1].name
     highest, lowest = config.stakes[max(used)].name, config.stakes[min(used)].name
@@ -848,7 +879,7 @@ def bankroll_ladder(config: Config):
     return rows
 
 
-def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
+def _bankroll_ladder_slide(prs, layouts, config: Config, best, currents=()):
     slide = prs.slides.add_slide(layouts["Title and Content"])
     pc.add_title(slide, "What to play as the bankroll grows")
 
@@ -868,7 +899,7 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
         ("", 1.05),
     ])
     rows = bankroll_ladder(config)
-    lead = 2 if current is not None else 1  # header, plus the benchmark row
+    lead = 1 + len(currents)  # header, plus one row per period actually played
     table_width = Inches(sum(w for _, w in columns))
     left = int(pc.CONTENT_LEFT + (pc.CONTENT_WIDTH - table_width) / 2)
     shape = slide.shapes.add_table(
@@ -884,12 +915,14 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
         pc.set_cell(cell, label, font_size=10, bold=True,
                     bg_colour=pc.TABLE_HEADER_BG, font_colour=pc.WHITE, wrap=True)
 
-    if current is not None:
-        # Priced at TODAY's bankroll, because that is the roll it is being
-        # played on - the rows below re-solve at bigger rolls, this one does not.
+    for index, (name, current) in enumerate(currents):
+        # Priced at TODAY's bankroll, because that is the roll they were all
+        # played on - the rows below re-solve at bigger rolls, these do not.
+        latest = index == len(currents) - 1
         swing = sim.expected_drawdown(config, current, config.timescale_hands)
         values = [
-            "playing", _money(config, config.bankroll_eur), current.label,
+            "played" if not latest else "playing",
+            _money(config, config.bankroll_eur), current.label,
             _plain(config, current.eur_per_hour),
             f"{config.currency.from_eur(current.eur_per_hour - best.eur_per_hour):+,.0f}"
             if best else "-",
@@ -898,13 +931,14 @@ def _bankroll_ladder_slide(prs, layouts, config: Config, best, current):
             f"{current.risk_of_ruin:.2%}",
             _plain(config, swing["median"]), _plain(config, swing["p90"]),
             _plain(config, swing["p99"]),
-            "what you play now",
+            "what you play now" if latest else f"what you played in {name}",
         ]
         for i, value in enumerate(values):
-            cell = table.cell(1, i)
+            cell = table.cell(1 + index, i)
             pc._zero_cell_margins(cell)
-            pc.set_cell(cell, value, font_size=10, bold=True,
-                        bg_colour=pc.COL_ORANGE, wrap=True)
+            pc.set_cell(cell, value, font_size=10, bold=latest,
+                        bg_colour=pc.COL_ORANGE if latest else pc.TABLE_LABEL_BG,
+                        wrap=True)
 
     previous_top = None
     for row, (label, bankroll, scenario, allocation) in enumerate(rows, start=lead):
@@ -1029,7 +1063,7 @@ def _frontier_slide(prs, layouts, title, fig, blocks, dpi=200):
     return slide
 
 
-def _frontier_pair_slide(prs, layouts, config: Config, best, current):
+def _frontier_pair_slide(prs, layouts, config: Config, best, currents=()):
     """Both frontier charts on one slide, with the wording beneath them.
 
     Same decision, priced two ways, in one eyeful. The notes go UNDER the pair
@@ -1055,7 +1089,7 @@ def _frontier_pair_slide(prs, layouts, config: Config, best, current):
     # Two columns under the picture: the two mixes side by side, then the limits
     # and the reading note. Four blocks stacked in one column would run off the
     # slide at a legible size.
-    blocks = charts.frontier_notes(config, best, current, which="both", compact=True)
+    blocks = charts.frontier_notes(config, best, currents, which="both", compact=True)
     half = (pc.CONTENT_WIDTH - NOTES_GUTTER) // 2
     top = pc.CONTENT_TOP + pc.CONTENT_HEIGHT - notes_height
     mixes = [b for b in blocks if "circle" in b[0]]
@@ -1421,7 +1455,7 @@ def _footnote(slide, text):
     return box
 
 
-def _mixes_needing_simulation(config: Config, screens, edge, best, current):
+def _mixes_needing_simulation(config: Config, screens, edge, best, currents=()):
     """Every allocation that will appear in a table, de-duplicated, in order."""
     wanted = []
 
@@ -1441,19 +1475,20 @@ def _mixes_needing_simulation(config: Config, screens, edge, best, current):
             want(allocation)
         for option in mix.step_up_options(config, best):
             want(option.allocation)
-    want(current)
+    for _, allocation in currents:
+        want(allocation)
     return wanted
 
 
-def _prime_simulations(config: Config, screens, edge, best, current) -> dict:
+def _prime_simulations(config: Config, screens, edge, best, currents=()) -> dict:
     """Run every simulation the deck needs, with a progress bar.
 
     Returns the full-detail results for the headline charts, keyed by
     allocation, so they are not simulated a second time when those slides are
     built. The per-table figures go into sim's own cache.
     """
-    wanted = _mixes_needing_simulation(config, screens, edge, best, current)
-    headline = [a for a in (best, current) if a is not None]
+    wanted = _mixes_needing_simulation(config, screens, edge, best, currents)
+    headline = [a for a in (best, *(a for _, a in currents)) if a is not None]
     # The ladder rows each carry their OWN bankroll, so they cannot share the
     # cache entries above even where the allocation happens to match.
     ladder = [
@@ -1488,7 +1523,8 @@ def _prime_simulations(config: Config, screens, edge, best, current) -> dict:
     return results
 
 
-def build(config: Config, directory: Path, workbook_path: Path | None = None) -> Path:
+def build(config: Config, directory: Path, workbook_path: Path | None = None,
+          sims_path: Path | None = None) -> Path:
     """Build the deck and return the path written.
 
     With `workbook_path`, the same numbers are also written there as a
@@ -1498,8 +1534,14 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
     simulations, and any drift between the two would ship as a spreadsheet that
     contradicts its own deck.
 
-    The caller supplies the path, so it knows what was written without this
-    returning a second value and disturbing every existing call site.
+    With `sims_path`, the companion `sims.pptx` is written too - the same two
+    mixes, one simulated lifetime per slide (see `trials.py`). It is built from
+    HERE for the same reason the workbook is: `best` and `current` are already
+    chosen by this point, and choosing them again from outside would risk a
+    second deck that argues about a different mix.
+
+    The caller supplies the paths, so it knows what was written without this
+    returning more values and disturbing every existing call site.
     """
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "stake_optimisation.pptx"
@@ -1513,13 +1555,18 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
         progress_label="testing mixes" if config.risk_mode != "ruin" else None,
     )
 
-    current = mix.current_allocation(config)
+    # Every period actually played, oldest first. The LAST is what is being
+    # played now: it is the one the deck simulates, compares and argues against,
+    # while the earlier ones ride along on the frontier charts and in the tables
+    # to show where the mix has come from.
+    currents = mix.current_allocations(config)
+    current = currents[-1][1] if currents else None
 
     # Simulate everything the deck will need BEFORE building any slides, so the
     # work is visible as one progress bar rather than as a series of unexplained
     # pauses while tables render. Results land in sim's cache; the table code
     # then finds them already there.
-    simulations = _prime_simulations(config, screens, edge, best, current)
+    simulations = _prime_simulations(config, screens, edge, best, currents)
 
     prs, layouts = pc.load_template_presentation()
 
@@ -1547,11 +1594,11 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
     _winrate_ci_slide(prs, layouts, config, screens)
     _waterfall_slide(prs, layouts, config, screens, in_euros=False)
     _waterfall_slide(prs, layouts, config, screens, in_euros=True)
-    _single_stake_slide(prs, layouts, config, screens, best, current)
+    _single_stake_slide(prs, layouts, config, screens, best, currents)
     _frontier_slide(
         prs, layouts, "Every way to split the tables",
         charts.allocation_frontier_figure(config, annotate=False),
-        charts.frontier_notes(config, best, current, which="ruin"),
+        charts.frontier_notes(config, best, currents, which="ruin"),
     )
     # The same trade-off on the other risk axis. Every point it needs has already
     # been simulated by this stage, so it is cheap here even though the chart is
@@ -1559,13 +1606,13 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
     _frontier_slide(
         prs, layouts, "The same split, priced in downswings",
         charts.allocation_frontier_downswing_figure(config, annotate=False),
-        charts.frontier_notes(config, best, current, which="downswing"),
+        charts.frontier_notes(config, best, currents, which="downswing"),
     )
     # And both at once - the comparison the two slides above can only be read
     # across, which means holding the first picture in your head to read the
     # second. This is the version to present from.
-    _frontier_pair_slide(prs, layouts, config, best, current)
-    _configurations_slide(prs, layouts, config, allocations, edge, best, current)
+    _frontier_pair_slide(prs, layouts, config, best, currents)
+    _configurations_slide(prs, layouts, config, allocations, edge, best, currents)
     ev_lines = _ev_lines(config, best, current)
     if best is not None:
         _simulation_slide(
@@ -1584,7 +1631,9 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
             prs, layouts, "2. Shot-taking",
             "What it costs to move a table up a rung",
         )
-        _step_up_slide(prs, layouts, config, best, mix.step_up_options(config, best), current)
+        _step_up_slide(
+            prs, layouts, config, best, mix.step_up_options(config, best), currents
+        )
 
     # ---- 3. The same question at a bigger roll ----------------------------- #
     if best is not None:
@@ -1592,7 +1641,7 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
             prs, layouts, "3. As the bankroll grows",
             "Where the mix should go as the roll gets bigger",
         )
-        _bankroll_ladder_slide(prs, layouts, config, best, current)
+        _bankroll_ladder_slide(prs, layouts, config, best, currents)
 
     # ---- 4. What is actually happening ------------------------------------- #
     # No table slide here: the played mix is the first row of every table in the
@@ -1633,6 +1682,13 @@ def build(config: Config, directory: Path, workbook_path: Path | None = None) ->
     _methodology_slide(prs, layouts, config)
 
     prs.save(path)
+
+    if sims_path is not None and (best is not None or current is not None):
+        from . import trials
+
+        # The same reference lines as every simulation slide in this deck, so a
+        # lifetime in sims.pptx is read against the same two dotted EV lines.
+        trials.write(sims_path, config, best, current, ev_lines)
 
     if workbook_path is not None:
         from . import workbook

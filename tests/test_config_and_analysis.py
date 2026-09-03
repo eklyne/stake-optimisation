@@ -90,6 +90,43 @@ class TestConfigLoading(unittest.TestCase):
             load_config(_write(BASE_TOML.replace("stdev_bb100 = 90.0", "stdev_bb100 = -90.0")))
 
 
+class TestCurrentSplits(unittest.TestCase):
+    """`current_hands` in both its shapes - one period, or several named ones."""
+
+    def _loaded(self, current: str):
+        return load_config(_write(BASE_TOML + f"current_hands = {current}\n"))
+
+    def test_a_bare_number_becomes_one_unnamed_split(self):
+        stake = self._loaded("23082").stakes[0]
+        self.assertEqual(stake.current_hands, 23_082)
+        self.assertEqual(stake.current_splits, (("Current", 23_082.0),))
+
+    def test_named_splits_keep_the_order_they_were_written_in(self):
+        config = self._loaded("{ July = 23082, August = 15183 }")
+        self.assertEqual(config.current_split_labels, ("July", "August"))
+        self.assertEqual(
+            config.stakes[0].current_splits, (("July", 23_082.0), ("August", 15_183.0))
+        )
+
+    def test_the_last_split_is_the_one_played_now(self):
+        # Written oldest first, so "now" is the last - and `current_hands`, which
+        # the whole deck reads as the played mix, has to agree with that.
+        stake = self._loaded("{ July = 23082, August = 15183 }").stakes[0]
+        self.assertEqual(stake.current_hands, 15_183.0)
+
+    def test_a_stake_missing_from_a_split_played_none_of_it(self):
+        stake = self._loaded("{ July = 23082 }").stakes[0]
+        self.assertEqual(stake.hands_in_split("August"), 0.0)
+
+    def test_rejects_a_negative_split(self):
+        with self.assertRaises(ConfigError):
+            self._loaded("{ July = -1 }")
+
+    def test_rejects_an_empty_table_of_splits(self):
+        with self.assertRaises(ConfigError):
+            self._loaded("{ }")
+
+
 class TestOverrides(unittest.TestCase):
     def test_replace_applies_only_non_none_values(self):
         config = _config()

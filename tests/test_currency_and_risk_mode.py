@@ -255,7 +255,7 @@ class TestUnannotatedFrontier(unittest.TestCase):
         config = self._both()
         allocations = mix.all_allocations(config)
         best = mix.best_allocation(allocations, config)
-        blocks = charts.frontier_notes(config, best, mix.current_allocation(config))
+        blocks = charts.frontier_notes(config, best, mix.current_allocations(config))
         headings = [heading for heading, _, _ in blocks]
         self.assertTrue(any("Best inside tolerance" in h for h in headings))
         self.assertTrue(any("playing now" in h for h in headings))
@@ -269,6 +269,63 @@ class TestUnannotatedFrontier(unittest.TestCase):
         left, right = figure.axes
         self.assertIn("Risk of ruin", left.get_xlabel())
         self.assertIn("downswing", right.get_xlabel().lower())
+
+
+class TestSeveralPlayedSplits(unittest.TestCase):
+    """Two months of actual play on one frontier - the movement IS the point.
+
+    The mixes have to be drawn separately and be told apart on sight, or the
+    chart shows two dots and no story."""
+
+    def _two_months(self):
+        return _downswing(
+            4000.0,
+            risk_mode="both",
+            stakes=(
+                Stake("50NL", 0.5, 7.0, 95.0,
+                      current_splits=(("July", 20_000), ("August", 12_000))),
+                Stake("100NL", 1.0, 5.5, 92.0,
+                      current_splits=(("July", 10_000), ("August", 10_000))),
+                Stake("200NL", 2.0, 3.5, 90.0,
+                      current_splits=(("July", 5_000), ("August", 13_000))),
+            ),
+        )
+
+    def test_each_month_gets_its_own_mark(self):
+        from shotopt import charts
+
+        config = self._two_months()
+        splits = mix.current_allocations(config)
+        self.assertEqual([label for label, _ in splits], ["July", "August"])
+        self.assertNotEqual(splits[0][1].counts, splits[1][1].counts)
+
+        ax = charts.allocation_frontier_figure(config, annotate=False).axes[0]
+        marks = [
+            line for line in ax.get_lines()
+            if line.get_linestyle() == "None" and line.get_markersize() == 10
+        ]
+        # Two played months plus the optimum.
+        self.assertEqual(len(marks), 3)
+        # Now is the SOLID blue circle; the earlier month is the same circle
+        # hollow, so the ordering survives a greyscale print.
+        latest = [m for m in marks if m.get_color() == charts.COL_CURRENT_MARK]
+        hollow = [m for m in marks
+                  if m.get_markeredgecolor() == charts.COL_CURRENT_MARK
+                  and m.get_color() != charts.COL_CURRENT_MARK]
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(len(hollow), 1)
+
+    def test_the_notes_name_the_months_instead_of_saying_now(self):
+        from shotopt import charts
+
+        config = self._two_months()
+        best = mix.best_allocation(mix.all_allocations(config), config)
+        headings = [
+            heading for heading, _, _ in
+            charts.frontier_notes(config, best, mix.current_allocations(config))
+        ]
+        self.assertTrue(any(h.startswith("July") for h in headings))
+        self.assertTrue(any(h.startswith("August") for h in headings))
 
 
 class TestDegenerateRuinAxis(unittest.TestCase):

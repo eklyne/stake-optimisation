@@ -366,7 +366,27 @@ def _mark_best(ax, x: float, best, config: Config, annotate: bool = True) -> Non
     )
 
 
-def _mark_current(ax, x: float, current, config: Config, annotate: bool = True) -> None:
+def current_mark_style(index: int, total: int) -> dict:
+    """How the `index`-th played mix is drawn, out of `total` of them.
+
+    The LAST split is what is being played now, and it keeps the solid blue
+    circle the deck has always used for "you are here". Earlier splits are the
+    same circle HOLLOW - same hue, same size, empty middle - because they are the
+    same kind of thing at an earlier date, not a different quantity. Value, not
+    hue, carries the ordering, so the sequence survives a greyscale print and
+    does not spend a second colour the reader has to learn.
+    """
+    latest = index == total - 1
+    return dict(
+        marker="o", markersize=10, linestyle="none",
+        color=COL_CURRENT_MARK if latest else SURFACE,
+        markeredgecolor=MARK_EDGE if latest else COL_CURRENT_MARK,
+        markeredgewidth=1.0 if latest else 2.0,
+    )
+
+
+def _mark_current(ax, x: float, current, config: Config, annotate: bool = True,
+                  label: str = "", index: int = 0, total: int = 1) -> None:
     """The mix actually being played, so the gap to the frontier is visible rather
     than described. Vertical distance to the frontier is EV left on the table;
     horizontal distance is risk taken for nothing.
@@ -374,23 +394,37 @@ def _mark_current(ax, x: float, current, config: Config, annotate: bool = True) 
     Same circle, same size as `_mark_best` - only the colour differs. The two
     markers are the same KIND of thing (a mix, at a point on this trade-off), and
     giving them different shapes made them read as different quantities.
+
+    With several splits on one chart each gets its own marker (see
+    `current_mark_style`) and its own annotation, dropped a further line down the
+    axis so two nearby mixes do not write over each other.
     """
     y = config.currency.from_eur(current.eur_per_hour)
     ax.plot(
         [x], [y],
-        marker="o", markersize=10, color=COL_CURRENT_MARK,
-        markeredgecolor=MARK_EDGE, markeredgewidth=1.0, linestyle="none",
-        label="What you are playing now",
+        label=_current_legend_label(label, index, total),
+        **current_mark_style(index, total),
     )
     if not annotate:
         return
     ax.annotate(
-        f"current: {_hourly(current.eur_per_hour, config)}  |  "
+        f"{label or 'current'}: {_hourly(current.eur_per_hour, config)}  |  "
         f"ruin {_odds(current.risk_of_ruin)}",
         xy=(x, y),
-        xytext=(10, -14), textcoords="offset points",
+        xytext=(10, -14 - 13 * (total - 1 - index)), textcoords="offset points",
         color=COL_CURRENT_MARK, fontsize=9.5, fontweight="bold",
     )
+
+
+def _current_legend_label(label: str, index: int, total: int) -> str:
+    """Key text for a played-mix marker.
+
+    One split keeps the original wording - there is no history to contrast it
+    with, so naming a period would be noise. With several, the name IS the
+    content and the marker is captioned with it."""
+    if total <= 1:
+        return "What you are playing now"
+    return f"{label}{' (now)' if index == total - 1 else ''}"
 
 
 def _downswing_cut_on_ruin_axis(config: Config, edge, floor: float):
@@ -443,7 +477,7 @@ def _one_in(probability: float) -> str:
     return f"1 in {odds:,.0f}"
 
 
-def _ruin_cannot_rank_draw(ax, config: Config, allocations, best, current,
+def _ruin_cannot_rank_draw(ax, config: Config, allocations, best, currents=(),
                            annotate=True, legend=True):
     """What the ruin chart becomes when no mix carries meaningful ruin.
 
@@ -471,10 +505,13 @@ def _ruin_cannot_rank_draw(ax, config: Config, allocations, best, current,
     # `vlines`, not `axvline`: an axvline spans the whole axes whatever the
     # margins are, so it would be drawn straight through the note above.
     head = counts.max() * 1.04
-    for allocation, colour, marker, label in (
-        (best, STATUS_GOOD, "o", "Chosen"),
-        (current, STATUS_CRITICAL, "D", "What you are playing now"),
-    ):
+    marks = [(best, STATUS_GOOD, "o", "Chosen")]
+    for index, (name, allocation) in enumerate(currents):
+        marks.append((
+            allocation, STATUS_CRITICAL, "D",
+            _current_legend_label(name, index, len(currents)),
+        ))
+    for allocation, colour, marker, label in marks:
         if allocation is None:
             continue
         at = money(allocation.eur_per_hour)
@@ -554,7 +591,7 @@ def _draw_allocation_frontier(
     # The mix actually being played, so the gap to the frontier is visible rather
     # than described. Its vertical distance to the blue line is EV left on the
     # table; its horizontal distance is risk taken for nothing.
-    current = mix.current_allocation(config)
+    currents = mix.current_allocations(config)
 
     # y is money, so it is DRAWN in the display currency - the axis label says so.
     # Converting only the label would leave a chart reading "GBP" over euro values.
@@ -569,7 +606,7 @@ def _draw_allocation_frontier(
     # zero for every human purpose.
     if allocations and max(a.risk_of_ruin for a in allocations) < RUIN_NEGLIGIBLE:
         return _ruin_cannot_rank_draw(
-            ax, config, allocations, best, current, annotate=annotate, legend=legend
+            ax, config, allocations, best, currents, annotate=annotate, legend=legend
         )
 
     # Follows the data rather than a constant: twelve decades below the riskiest
@@ -620,9 +657,10 @@ def _draw_allocation_frontier(
     if best is not None:
         _mark_best(ax, max(best.risk_of_ruin, floor), best, config, annotate=annotate)
 
-    if current is not None:
+    for index, (label, current) in enumerate(currents):
         _mark_current(
-            ax, max(current.risk_of_ruin, floor), current, config, annotate=annotate
+            ax, max(current.risk_of_ruin, floor), current, config, annotate=annotate,
+            label=label, index=index, total=len(currents),
         )
     # Any stack remaining on the left edge is the floor, not a coincidence: those
     # mixes carry a risk too small to tell apart or to care about.
@@ -694,12 +732,12 @@ def _draw_downswing_frontier(
     rule = _tolerance.DownswingTolerance()
     allocations = mix.all_allocations(config)
     best = mix.best_allocation(allocations, config)
-    current = mix.current_allocation(config)
+    currents = mix.current_allocations(config)
 
     # Deduplicated on the mix, then measured. Anything the optimiser already
     # tested comes straight back out of the simulation cache.
     candidates: dict[tuple[int, ...], object] = {a.counts: a for a in mix.frontier(allocations)}
-    for extra in (best, current):
+    for extra in (best, *(a for _, a in currents)):
         if extra is not None:
             candidates[extra.counts] = extra
 
@@ -789,8 +827,12 @@ def _draw_downswing_frontier(
 
     if best is not None and best.counts in measured:
         _mark_best(ax, measured[best.counts], best, config, annotate=annotate)
-    if current is not None and current.counts in measured:
-        _mark_current(ax, measured[current.counts], current, config, annotate=annotate)
+    for index, (label, current) in enumerate(currents):
+        if current.counts in measured:
+            _mark_current(
+                ax, measured[current.counts], current, config, annotate=annotate,
+                label=label, index=index, total=len(currents),
+            )
 
     ax.xaxis.set_major_formatter(FuncFormatter(_thousands))
     ax.set_xlabel(_tolerance.axis_label("downswing", config))
@@ -854,8 +896,16 @@ def _pair_legend(fig, config: Config) -> None:
         Line2D([], [], color=COL_FRONTIER, linewidth=2.0, marker="o", markersize=4.5,
                markeredgewidth=0, label="Efficient frontier"),
         Line2D([], [], **mark(STATUS_GOOD, 9), label="Best inside tolerance"),
-        Line2D([], [], **mark(COL_CURRENT_MARK, 9), label="What you are playing now"),
     ]
+    # One key entry per played split, drawn exactly as the panels draw it -
+    # a key that shows a solid circle for a hollow mark is worse than none.
+    splits = mix.current_allocations(config)
+    for index, (label, _) in enumerate(splits):
+        style = current_mark_style(index, len(splits))
+        style["markersize"] = 9
+        entries.append(Line2D(
+            [], [], **style, label=_current_legend_label(label, index, len(splits)),
+        ))
     if config.risk_mode in ("ruin", "both"):
         entries.append(Line2D(
             [], [], color=COL_RUIN_LIMIT, linewidth=1.6, linestyle="--",
@@ -901,7 +951,7 @@ def frontier_pair_figure(config: Config, figsize=PAIR_FIGSIZE, annotate: bool = 
 
 
 def frontier_notes(
-    config: Config, best=None, current=None, which: str = "both",
+    config: Config, best=None, currents=(), which: str = "both",
     compact: bool = False,
 ):
     """The text that used to be written onto the frontier charts.
@@ -911,9 +961,10 @@ def frontier_notes(
     colours stay tied to the marks they describe - a legend that drifts from its
     chart is worse than no legend.
 
-    `best`/`current` are optional only so a caller that has not computed them can
-    still get the limit and reading blocks; passing the same objects the chart was
-    drawn from is the point.
+    `best` is optional, and `currents` - a sequence of `(label, mix)` as returned
+    by `mix.current_allocations` - may be empty, only so a caller that has not
+    computed them can still get the limit and reading blocks; passing the same
+    objects the chart was drawn from is the point.
 
     `which` selects which chart(s) the reading instructions describe - 'ruin',
     'downswing', or 'both' for the two-panel slide.
@@ -938,12 +989,18 @@ def frontier_notes(
         blocks.append(
             ("Best inside tolerance (green circle)", STATUS_GOOD, mix_lines(best))
         )
-    if current is not None:
+    for index, (label, current) in enumerate(currents):
         lines = mix_lines(current)
         if best is not None:
             gap = config.currency.from_eur(best.eur_per_hour - current.eur_per_hour)
             lines.append(f"{gap:+,.0f} {money.code}/hr left on the table")
-        blocks.append(("What you are playing now (blue circle)", COL_CURRENT_MARK, lines))
+        latest = index == len(currents) - 1
+        heading = (
+            "What you are playing now (blue circle)" if len(currents) <= 1
+            else f"{label} - {'now' if latest else 'earlier'} "
+                 f"({'solid' if latest else 'hollow'} blue circle)"
+        )
+        blocks.append((heading, COL_CURRENT_MARK, lines))
 
     limits = []
     if config.risk_mode in ("ruin", "both"):

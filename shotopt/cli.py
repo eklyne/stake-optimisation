@@ -500,8 +500,15 @@ def main(argv: list[str] | None = None) -> int:
         # The deck and its data file are a pair, built in one pass from one set
         # of numbers so they cannot drift apart.
         data_path = output_dir / "stake_optimisation_data.xlsx"
-        _WRITTEN.append(deck.build(config, output_dir, workbook_path=data_path))
+        # `sims.pptx` is the third member of that pair: one simulated lifetime
+        # per slide for the same two mixes, built in the same pass so it cannot
+        # describe a different optimum from the deck beside it.
+        sims_path = output_dir / "sims.pptx"
+        _WRITTEN.append(deck.build(
+            config, output_dir, workbook_path=data_path, sims_path=sims_path,
+        ))
         _WRITTEN.append(data_path)
+        _WRITTEN.append(sims_path)
         plain_deck = not pptx_common.template_available()
 
     # Reported once, at the end, so the numbered steps read in order rather than

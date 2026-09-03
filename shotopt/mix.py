@@ -42,6 +42,7 @@ __all__ = [
     "StepUp",
     "step_up_options",
     "current_allocation",
+    "current_allocations",
     "MAX_ALLOCATIONS",
     "AllocationLimit",
     "screen_stakes",
@@ -82,6 +83,23 @@ class Allocation:
     charted and exported either way. In downswing mode it is NOT the verdict;
     `tolerance.for_config` holds that."""
     drawdown_50: float
+    rakeback_eur_per_100: float = 0.0
+    """The part of `mean_eur_per_100` that is rakeback rather than won at the
+    tables - the SAME sum, split out rather than added on.
+
+    It sits last only because the fields above it carry no defaults. What it is
+    for: rakeback is a rebate on volume, so it is the one component of the mean
+    that carries no variance at all (see `rates.rakeback_bb100`). A simulated
+    lifetime is therefore a random walk on `table_mean_eur_per_100` plus a dead
+    straight ramp of this, which is exactly the decomposition `trials.py` draws -
+    a downswing at the tables is deeper than the fall in the bankroll behind it,
+    by whatever rakeback arrived while it was happening."""
+
+    @property
+    def table_mean_eur_per_100(self) -> float:
+        """Expected euros per 100 hands WON AT THE TABLES - the variance-bearing
+        half of the mean, net of rake as a tracker reports it."""
+        return self.mean_eur_per_100 - self.rakeback_eur_per_100
 
     @property
     def label(self) -> str:
@@ -286,6 +304,7 @@ def evaluate(counts: tuple[int, ...], config: Config) -> Allocation:
         raise ValueError("an allocation must place at least one table")
 
     mean = 0.0
+    rakeback = 0.0
     variance = 0.0
     for count, stake in zip(counts, stakes):
         if not count:
@@ -301,6 +320,14 @@ def evaluate(counts: tuple[int, ...], config: Config) -> Allocation:
             config.rakeback_pct,
         )
         mean += share * winrate * stake.bb_eur
+        # The rakeback part of that same sum, kept apart so it can be drawn and
+        # reported separately from what the cards paid. Re-derived from the same
+        # helper `total_winrate` used internally, never re-modelled, so the part
+        # cannot drift from the whole it was taken out of.
+        rakeback += (
+            share * rates.rakeback_bb100(stake.rake_bb100, config.rakeback_pct)
+            * stake.bb_eur
+        )
         # Rakeback deliberately absent here: it is a rebate on volume, not a
         # gamble, so it moves the mean and not the variance.
         variance += share * (stake.stdev_bb100 * stake.bb_eur) ** 2
@@ -329,6 +356,7 @@ def evaluate(counts: tuple[int, ...], config: Config) -> Allocation:
         risk_of_ruin=min(risk, 1.0),
         within_ruin_tolerance=risk <= config.ruin_tolerance,
         drawdown_50=min(drawdown_50, 1.0),
+        rakeback_eur_per_100=rakeback,
     )
 
 
@@ -621,7 +649,31 @@ def current_allocation(config: Config) -> Allocation | None:
 
     Returns None when no stake declares `current_hands`.
     """
-    hands = [stake.current_hands or 0.0 for stake in config.stakes]
+    return _allocation_from_hands(
+        [stake.current_hands or 0.0 for stake in config.stakes], config
+    )
+
+
+def current_allocations(config: Config) -> tuple[tuple[str, Allocation], ...]:
+    """Every named split, `(label, mix)`, oldest first - the last is `now`.
+
+    One entry for a config that names no periods (or a bare `current_hands`), so
+    a caller can loop over this instead of special-casing the single-split case.
+    A split whose stakes all sit at zero is dropped rather than drawn at the
+    origin: it is a period with no play in it, not a mix.
+    """
+    out = []
+    for label in config.current_split_labels:
+        allocation = _allocation_from_hands(
+            [stake.hands_in_split(label) for stake in config.stakes], config
+        )
+        if allocation is not None:
+            out.append((label, allocation))
+    return tuple(out)
+
+
+def _allocation_from_hands(hands, config: Config) -> Allocation | None:
+    """Hands per stake -> whole tables, by largest remainder. See above."""
     total = sum(hands)
     if total <= 0:
         return None

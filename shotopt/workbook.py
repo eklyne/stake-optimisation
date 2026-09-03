@@ -78,6 +78,7 @@ def write(
     import xlsxwriter
 
     money = config.currency.from_eur
+    splits = config.current_split_labels or ("played",)
     code = config.currency.code.lower()
     names = [stake.name for stake in config.stakes]
 
@@ -127,7 +128,9 @@ def write(
         book, "STAKES",
         ["stake", "bb_eur", "winrate_bb100", "measured_winrate_bb100", "stdev_bb100",
          "rake_bb100", "rakeback_bb100", "banked_bb100", "sample_hands",
-         "current_hands", "max_tables", f"mean_per_100_{code}", f"stdev_per_100_{code}",
+         # One column per period actually played, named after it - a single
+         # "current_hands" would silently show only the latest.
+         *(f"hands_{label}" for label in splits), "max_tables", f"mean_per_100_{code}", f"stdev_per_100_{code}",
          f"per_hour_{code}", f"on_tables_{code}", "kept", "excluded_reason"],
         [
             [
@@ -138,7 +141,8 @@ def write(
                 rates.rakeback_bb100(s.stake.rake_bb100, config.rakeback_pct),
                 s.mean_eur_per_100 / s.stake.bb_eur,
                 s.stake.hands if s.stake.hands is not None else "",
-                s.stake.current_hands if s.stake.current_hands is not None else "",
+                *(s.stake.hands_in_split(label) if s.stake.current_splits else ""
+                  for label in splits),
                 s.stake.max_tables if s.stake.max_tables is not None else "",
                 money(s.mean_eur_per_100), money(s.stdev_eur_per_100),
                 money(s.eur_per_hour), money(s.exposure_eur),

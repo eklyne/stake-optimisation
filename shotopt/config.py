@@ -31,9 +31,13 @@ from .money import EUR, Currency
 
 __all__ = [
     "Stake", "Config", "ConfigError", "load_config", "DEFAULT_CONFIG_PATH", "RISK_MODES",
+    "DEFAULT_SPLIT_LABEL",
 ]
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
+
+DEFAULT_SPLIT_LABEL = "Current"
+"""What a single unnamed `current_hands = N` split is called on the slides."""
 
 RISK_MODES = ("ruin", "downswing", "both")
 """The legal values of `[risk] mode`. Lives here, not in `tolerance`, so that
@@ -125,7 +129,45 @@ class Stake:
 
     Only ever used as a RATIO, to reconstruct how the table time was really
     split, so the absolute figures and the period they cover don't matter as
-    long as they are consistent across stakes."""
+    long as they are consistent across stakes.
+
+    This is the PRIMARY split's figure - see `current_splits`. It is derived, not
+    an independent input: pass either form to the constructor and the other is
+    filled in, so the two can never disagree."""
+    current_splits: tuple[tuple[str, float], ...] = ()
+    """Named periods of actual play, `(label, hands)`, IN DECLARATION ORDER.
+
+    More than one so a review can carry several months side by side - the point
+    of a second split is watching the played mix MOVE against a frontier that
+    has not. The LAST one declared is the primary: it is what is being played
+    now, so it is the one the deck simulates, compares and argues against, while
+    the earlier ones are drawn on the frontier charts and listed in the tables
+    as history. Declare them oldest first.
+
+    A bare `current_hands=N` becomes the single split `DEFAULT_SPLIT_LABEL`."""
+
+    def __post_init__(self) -> None:
+        # ONE source of truth, normalised both ways at construction: every call
+        # site that wants "the mix played now" reads `current_hands`, and every
+        # one that wants the history reads `current_splits`, with no risk of a
+        # config supplying one and a caller reading the other.
+        if self.current_splits:
+            object.__setattr__(self, "current_hands", self.current_splits[-1][1])
+        elif self.current_hands is not None:
+            object.__setattr__(
+                self, "current_splits",
+                ((DEFAULT_SPLIT_LABEL, float(self.current_hands)),),
+            )
+
+    def hands_in_split(self, label: str) -> float:
+        """Hands played in the named split - 0.0 for a split this stake sat out.
+
+        Absent is genuinely zero here: the splits are a partition of table time,
+        so a stake missing from one month was not played that month."""
+        for name, hands in self.current_splits:
+            if name == label:
+                return hands
+        return 0.0
 
     @property
     def buyin_eur(self) -> float:
@@ -179,6 +221,20 @@ class Config:
     a period you can picture: a year of your own volume."""
     sim_paths: int = 20_000
     """Independent lifetimes simulated."""
+
+    @property
+    def current_split_labels(self) -> tuple[str, ...]:
+        """Every named period of actual play, in declaration order, LAST is now.
+
+        The union across stakes rather than any one stake's list, because a stake
+        can be missing from a month it was not played - which is exactly the
+        movement these splits exist to show."""
+        labels: list[str] = []
+        for stake in self.stakes:
+            for label, _ in stake.current_splits:
+                if label not in labels:
+                    labels.append(label)
+        return tuple(labels)
 
     def __post_init__(self) -> None:
         # Runs on CLI overrides too, so `--bankroll -500` is caught here rather
@@ -376,8 +432,28 @@ def _parse_stake(raw: dict, index: int) -> Stake:
                 f"sample behind it cannot be given an interval"
             )
 
+    # Two shapes, one meaning. `current_hands = 23082` is the single-period form;
+    # `current_hands = { July = 23082, August = 15183 }` names several periods so
+    # the deck can show the played mix moving. TOML preserves the written order,
+    # and that order is chronological by convention - the LAST is "now".
     current = raw.get("current_hands")
-    if current is not None:
+    splits: tuple[tuple[str, float], ...] = ()
+    if isinstance(current, dict):
+        parsed = []
+        for label, value in current.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ConfigError(
+                    f"{where}: current_hands[{label!r}] must be a non-negative number, "
+                    f"got {value!r}"
+                )
+            parsed.append((str(label), float(value)))
+        if not parsed:
+            raise ConfigError(
+                f"{where}: current_hands is an empty table - omit it, or name at least "
+                f"one period"
+            )
+        splits, current = tuple(parsed), None
+    elif current is not None:
         if isinstance(current, bool) or not isinstance(current, (int, float)) or current < 0:
             raise ConfigError(
                 f"{where}: current_hands must be a non-negative number, got {current!r}"
@@ -393,6 +469,7 @@ def _parse_stake(raw: dict, index: int) -> Stake:
         max_tables=max_tables,
         rake_bb100=rake,
         current_hands=current,
+        current_splits=splits,
         measured_winrate_bb100=measured,
     )
 
