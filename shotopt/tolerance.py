@@ -283,11 +283,35 @@ def for_config(config: "Config") -> Tolerance:
     raise ValueError(f"unknown risk mode {config.risk_mode!r}, expected one of {MODES}")
 
 
+def _ordinal(n: int) -> str:
+    """1 -> 1st, 90 -> 90th. Small, but the alternative is hardcoding "90th"
+    in four places and having them all lie the day the tolerance changes."""
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def downswing_percentile(config: "Config") -> str:
+    """The percentile the downswing rule tests at, as "90th".
+
+    Note the FLIP: a 10% tolerance is the 90th percentile of the worst downswing
+    per lifetime, because `downswing_probability` is the share of lifetimes
+    allowed to be WORSE. Every label that quotes a percentile derives it here, so
+    the flip is performed once instead of in each caller."""
+    return _ordinal(round((1.0 - config.downswing_probability) * 100))
+
+
 def axis_label(mode: str, config: "Config") -> str:
-    """X-axis label for a frontier chart drawn on `mode`'s measure."""
+    """X-axis label for a frontier chart drawn on `mode`'s measure.
+
+    Says "{n}th percentile", never "at 10%". The old wording read as a downswing
+    of 10% - a SIZE, a tenth of the bankroll - when it is a FREQUENCY, the one
+    stretch in ten that goes worse. Two different quantities, and the axis is
+    often drawn bare, with no subtitle underneath to disambiguate it."""
     if mode == "downswing":
         return (
-            f"Worst downswing at {config.downswing_probability:.0%} "
-            f"over {config.downswing_hands:,} hands ({config.currency.code})"
+            f"Worst downswing over {config.downswing_hands:,} hands - "
+            f"{downswing_percentile(config)} percentile ({config.currency.code})"
         )
     return "Risk of ruin"

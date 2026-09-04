@@ -164,20 +164,20 @@ downswing_probability = 0.10   # p - probability of having a downswing this bad
 [[stake]]
 name = "50NL"
 bb_eur = 0.50
-winrate_bb100 = 9.74
-stdev_bb100 = 92.36
-rake_bb100 = 10.096
-current_hands = { July = 24489, August = 17351 }
-hands = 285582
+winrate_bb100 = 9.55
+stdev_bb100 = 92.30
+rake_bb100 = 10.084
+current_hands = { August = 17351, September = 1821 }
+hands = 287403
 
 [[stake]]
 name = "100NL"
 bb_eur = 1.00
-winrate_bb100 = 5.77
-stdev_bb100 = 91.66
-rake_bb100 = 8.083
-current_hands = { July = 12732, August = 12367 }
-hands = 95202
+winrate_bb100 = 5.16
+stdev_bb100 = 91.74
+rake_bb100 = 8.064
+current_hands = { August = 12367, September = 1018 }
+hands = 96220
 
 # 5-max, 6-max and the WPN $2 tables all land on this one rung: same blinds,
 # same money, so the allocator has no reason to treat them as separate. That
@@ -188,11 +188,11 @@ hands = 95202
 [[stake]]
 name = "200NL"
 bb_eur = 2.00
-winrate_bb100 = 3.05
-stdev_bb100 = 91.72
-rake_bb100 = 6.170
-current_hands = { July = 15255, August = 16739 }
-hands = 55054
+winrate_bb100 = 3.12
+stdev_bb100 = 91.62
+rake_bb100 = 6.162
+current_hands = { August = 16739, September = 1107 }
+hands = 56161
 
 # ASSUMED win rate - `measured_winrate_bb100` is what the sample actually says.
 # 1.01 over 15,530 hands carries a 95% interval of +/-12.8, so 2.0 is a mildly
@@ -213,12 +213,12 @@ hands = 55054
 [[stake]]
 name = "400NL"
 bb_eur = 4.00
-winrate_bb100 = 2.0
-measured_winrate_bb100 = 1.01
-stdev_bb100 = 81.24
-rake_bb100 = 4.279
-current_hands = { July = 4632, August = 6079 }
-hands = 15530
+winrate_bb100 = 2.00  # ASSUMED
+measured_winrate_bb100 = 0.77  # +/-12.6 at 95%
+stdev_bb100 = 81.12
+rake_bb100 = 4.270
+current_hands = { August = 6079, September = 304 }
+hands = 15834
 
 # The next two win rates are ZERO BY ASSUMPTION - a deliberate "I do not have a
 # win rate here", not a measurement of zero. The measured all-in figures (37.84
@@ -251,19 +251,19 @@ hands = 15530
 [[stake]]
 name = "600NL"
 bb_eur = 6.00
-winrate_bb100 = 0.0
-measured_winrate_bb100 = 37.84
-stdev_bb100 = 92.0
+winrate_bb100 = 0.00  # ASSUMED
+measured_winrate_bb100 = 37.84  # +/-40.3 at 95%
+stdev_bb100 = 92.00  # ASSUMED (1676 hands is too thin for a second moment)
 rake_bb100 = 3.509
-current_hands = { July = 606, August = 1070 }
+current_hands = { August = 1070, September = 0 }
 hands = 1676
 
 [[stake]]
 name = "1KNL"
 bb_eur = 10.00
-winrate_bb100 = 0.0
-measured_winrate_bb100 = -8.82
-stdev_bb100 = 92.0
+winrate_bb100 = 0.00  # ASSUMED
+measured_winrate_bb100 = -8.82  # +/-50.2 at 95%
+stdev_bb100 = 92.00  # ASSUMED (479 hands is too thin for a second moment)
 rake_bb100 = 2.171
-current_hands = { July = 10, August = 469 }
+current_hands = { August = 469, September = 0 }
 hands = 479

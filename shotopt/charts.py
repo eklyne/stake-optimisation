@@ -849,12 +849,14 @@ def _draw_downswing_frontier(
 def downswing_subtitle(config: Config) -> str:
     """What the downswing axis measures. Public for the same reason as
     `ruin_subtitle`: the deck prints it rather than drawing it."""
-    from . import sim
+    from . import sim, tolerance as _tolerance
 
     return (
-        f"How deep a fall from a high each mix runs, {config.downswing_probability:.0%} "
-        f"of the time, over {config.downswing_hands:,} hands "
-        f"({sim.TOLERANCE_PATHS:,} simulated lifetimes each)."
+        f"The deepest peak-to-trough downswing each mix runs into over "
+        f"{config.downswing_hands:,} hands, at the "
+        f"{_tolerance.downswing_percentile(config)} percentile - one stretch in "
+        f"{1 / config.downswing_probability:.0f} goes worse than this. "
+        f"({sim.TOLERANCE_PATHS:,} simulated lifetimes each.)"
     )
 
 
@@ -1445,6 +1447,8 @@ def _fan_legend(fig, config: Config, line_colour, mass, roll_on_axis: bool) -> N
     identified by colour."""
     from matplotlib.lines import Line2D
 
+    from . import tolerance as _tolerance
+
     entries = [
         Line2D([], [], color=line_colour, linewidth=0.9, linestyle="--",
                label="Middle 50% of lifetimes"),
@@ -1456,9 +1460,9 @@ def _fan_legend(fig, config: Config, line_colour, mass, roll_on_axis: bool) -> N
         Line2D([], [], color=STATUS_CRITICAL, linewidth=1.4, linestyle="--",
                label=("Ruin barrier / your whole roll" if roll_on_axis
                       else f"Ruin - lose the {config.currency.fmt(config.bankroll_eur)} roll")),
-        Line2D([], [], color=INK, linewidth=1.4, label="Median worst fall"),
+        Line2D([], [], color=INK, linewidth=1.4, label="Median worst downswing"),
         Line2D([], [], color=INK, linewidth=1.4, linestyle=":",
-               label="90th-percentile worst fall"),
+               label=f"{_tolerance.downswing_percentile(config)}-percentile worst downswing"),
     ]
     fig.legend(handles=entries, loc="lower center", ncols=4, frameon=False,
                fontsize=9)
@@ -1662,7 +1666,7 @@ def simulation_notes(config: Config, panels, ev_lines=(), compact: bool = False)
             lines = [
                 result.allocation.label,
                 f"90% finish {money.fmt(low)} to {money.fmt(high)}  |  "
-                f"typical worst fall {money.fmt(median_dd)}  |  "
+                f"typical worst downswing {money.fmt(median_dd)}  |  "
                 f"ruin {result.ruin_probability:.2%}",
             ]
         else:

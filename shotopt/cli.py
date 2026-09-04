@@ -325,8 +325,8 @@ def cmd_mix(config: Config, output_dir: Path) -> int:
         # The number the rule actually tested on, quoted for the winner only -
         # every other row would need its own simulation.
         depth = _tolerance.DownswingTolerance().measure(best, config)
-        print(f"  Chosen: {best.label} runs a {config.currency.fmt(depth)} worst fall "
-              f"at {config.downswing_probability:.0%}")
+        print(f"  Chosen: {best.label} runs a {config.currency.fmt(depth)} worst "
+              f"downswing at the {_tolerance.downswing_percentile(config)} percentile")
         print(f"  over {config.downswing_hands:,} hands, against a limit of "
               f"{config.currency.fmt(config.downswing_amount_eur)}.")
         if config.risk_mode == "both":
